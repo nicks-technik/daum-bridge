@@ -1,6 +1,6 @@
 # Installation (via GitHub)
 
-See also: [overview.md](overview.md), [handling.md](handling.md), [protocol.md](protocol.md), [wsl-prep.md](wsl-prep.md)
+See also: [overview.md](overview.md), [protocol.md](protocol.md), [glossary.md](glossary.md)
 
 This guide covers installing the Daum Bridge from GitHub and its prerequisites.
 
@@ -140,7 +140,24 @@ uv run daum-bridge run
 ```
 
 ## WSL2 Notes
-See [wsl-prep.md](wsl-prep.md) for USB/Bluetooth passthrough notes (usbipd-win) and limitations of WSL2 for BLE peripheral mode.
+When using WSL2, direct USB/Bluetooth passthrough isn't available by default.
+
+### USB (RS232→USB adapter)
+Use [usbipd-win](https://github.com/dorssel/usbipd-win) to attach the USB adapter to WSL2:
+```powershell
+# On Windows (as admin)
+winget install usbipd
+usbipd list
+usbipd bind --busid <BUSID>
+usbipd attach --wsl --busid <BUSID>
+```
+In WSL, check with `ls /dev/ttyUSB* /dev/ttyACM*`.
+
+### Bluetooth (BLE FTMS)
+WSL2 kernels often lack a full Bluetooth stack; BLE peripheral (advertising as FTMS) is unreliable. For best results, use native Linux (Raspberry Pi/PC). If you must use WSL2, you may need a USB Bluetooth adapter passed through via usbipd and a compatible kernel - success not guaranteed.
+
+### Web UI access
+The web UI will be available on the WSL IP or via `http://localhost:<port>` depending on port forwarding. Check with `ip addr show eth0` or use Windows portproxy if needed.
 
 ## Bluetooth/BlueZ Setup (FTMS Peripheral)
 
@@ -196,6 +213,6 @@ sudo hciconfig hci0 up
 Open `http://<bridge-ip>:8080` for status and gear shifting.
 
 ## Notes
-- BLE FTMS peripheral requires BlueZ on Linux. See [handling.md](handling.md) for details.
+- BLE FTMS peripheral requires BlueZ on Linux. See [overview.md](overview.md) for details.
 - MyWhoosh pairs as a BLE FTMS trainer device.
 - For protocol details, see [protocol.md](protocol.md).
