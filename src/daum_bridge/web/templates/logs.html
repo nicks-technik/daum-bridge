@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>daum-bridge - Logs</title>
+    <style>
+        body { font-family: 'Courier New', monospace; margin: 0; background: #0f172a; color: #e2e8f0; }
+        .header { background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); padding: 20px 40px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .header h1 { margin: 0; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 30px 20px; }
+        .nav { margin-bottom: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .nav a { color: #3b82f6; text-decoration: none; margin-right: 15px; }
+        .logbox { background: #020617; padding: 20px; border-radius: 10px; border: 1px solid #334155; overflow-x: auto; max-height: 600px; overflow-y: auto; }
+        .logline { font-size: 12px; line-height: 1.4; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📋 Logs</h1>
+    </div>
+    <div class="container">
+        <div class="nav">
+            <a href="/">← Dashboard</a>
+            <a href="/history">History</a>
+            <a href="/config">Config</a>
+        </div>
+        <div class="logbox" id="logbox"></div>
+    </div>
+    <script>
+        async function load() {
+            try {
+                const res = await fetch('/api/logs');
+                const data = await res.json();
+                const box = document.getElementById('logbox');
+                box.innerHTML = '';
+                if (!data.logs || data.logs.length === 0) {
+                    box.innerHTML = '<div class="logline">No logs yet.</div>';
+                    return;
+                }
+                for (const log of data.logs) {
+                    const div = document.createElement('div');
+                    div.className = 'logline';
+                    div.textContent = log;
+                    box.appendChild(div);
+                }
+                box.scrollTop = box.scrollHeight;
+            } catch(e) {}
+        }
+        load();
+        setInterval(load, 2000);
+    </script>
+</body>
+</html>

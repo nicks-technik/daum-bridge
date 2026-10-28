@@ -47,8 +47,10 @@
     </div>
     
     <div class="container">
-        <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center;">
+        <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
             <a href="/config" style="color: #3b82f6; text-decoration: none;">⚙️ Config</a>
+            <a href="/logs" style="color: #3b82f6; text-decoration: none;">📋 Logs</a>
+            <a href="/history" style="color: #3b82f6; text-decoration: none;">🚴 History</a>
             <button onclick="reconnectSerial()" style="padding: 6px 12px; background: #334155; color: white; border: none; border-radius: 6px; cursor: pointer;">Reconnect Serial</button>
             <span id="uptime" style="color: #94a3b8; font-size: 13px;"></span>
         </div>
@@ -303,23 +305,32 @@
         }
         
         async function shiftUp() {
-            await fetch('/api/shift/up', { method: 'POST' });
-            setTimeout(updateState, 200);
+            try {
+                await fetch('/api/shift/up', { method: 'POST' });
+                showToast('Shifted up', 'success');
+                setTimeout(updateState, 200);
+            } catch(e) { showToast('Shift failed', 'error'); }
         }
         
         async function shiftDown() {
-            await fetch('/api/shift/down', { method: 'POST' });
-            setTimeout(updateState, 200);
+            try {
+                await fetch('/api/shift/down', { method: 'POST' });
+                showToast('Shifted down', 'success');
+                setTimeout(updateState, 200);
+            } catch(e) { showToast('Shift failed', 'error'); }
         }
         
         async function setPower(val) {
-            const watts = val !== undefined ? val : parseInt(document.getElementById('powerInput').value) || 0;
-            await fetch('/api/target/watt', { 
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({watts: watts})
-            });
-            setTimeout(updateState, 200);
+            try {
+                const watts = val !== undefined ? val : parseInt(document.getElementById('powerInput').value) || 0;
+                await fetch('/api/target/watt', { 
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({watts: watts})
+                });
+                showToast('Target power set to ' + watts + 'W', 'success');
+                setTimeout(updateState, 200);
+            } catch(e) { showToast('Failed to set power', 'error'); }
         }
         
         setInterval(updateState, 500);
@@ -332,16 +343,25 @@
                 const res = await fetch('/api/reconnect/serial', {method: 'POST'});
                 const data = await res.json();
                 if (data.ok) {
-                    alert('Reconnect initiated');
+                    showToast('Reconnect initiated', 'success');
                 } else {
-                    alert('Reconnect failed: ' + (data.error || 'unknown'));
+                    showToast('Reconnect failed: ' + (data.error || 'unknown'), 'error');
                 }
             } catch(e) {
-                alert('Error: ' + e);
+                showToast('Error: ' + e, 'error');
             }
         }
     </script>
+    <div id="toast-container" style="position: fixed; bottom: 20px; right: 20px; z-index: 1000;"></div>
     <script>
+        function showToast(msg, type='info') {
+            const c = document.getElementById('toast-container');
+            const t = document.createElement('div');
+            t.style.cssText = `background:${type==='error'?'#dc2626':type==='success'?'#16a34a':'#1e40af'};color:white;padding:12px 20px;border-radius:8px;margin-top:10px;box-shadow:0 4px 6px rgba(0,0,0,0.3);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;`;
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(()=>t.remove(), 3000);
+        }
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/static/sw.js').catch(()=>{});
         }

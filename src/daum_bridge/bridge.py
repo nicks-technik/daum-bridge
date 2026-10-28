@@ -39,6 +39,17 @@ class DaumBridge:
         self._app_connected_time = None
         self._erg_retry_count = 0
         self._last_erg_attempt = 0.0
+        self._logs = []
+        self._ride_history = []
+        self._current_ride = None
+        self._ride_start = None
+        self._ride_work = 0.0
+        self._last_power_time = None
+        self._ride_max_power = 0.0
+        self._ride_avg_power = 0.0
+        self._ride_power_sum = 0.0
+        self._ride_power_count = 0
+
 
     def add_state_callback(self, cb: Callable[[DaumState], None]):
         self._callbacks.append(cb)
@@ -49,6 +60,57 @@ class DaumBridge:
                 cb(self.state)
             except Exception as e:
                 log.debug("Callback error: %s", e)
+        try:
+            self._update_ride_stats()
+        except Exception:
+            pass
+
+    def _update_ride_stats(self):
+        try:
+            if not self._current_ride and self.state.connected:
+                self._current_ride = time.time()
+                self._ride_start = time.time()
+                self._ride_work = 0.0
+                self._last_power_time = time.time()
+                self._ride_max_power = 0.0
+                self._ride_power_sum = 0.0
+                self._ride_power_count = 0
+            if self._current_ride and self.state.connected:
+                now = time.time()
+                p = float(getattr(self.state, 'power', 0) or 0)
+                if p > 0 and self._last_power_time:
+                    dt = now - self._last_power_time
+                    if dt > 0 and dt < 5:
+                        self._ride_work += p * dt / 3600.0  # kJ
+                self._last_power_time = now
+                if p > self._ride_max_power:
+                    self._ride_max_power = p
+                self._ride_power_sum += p
+                self._ride_power_count += 1
+                if self._ride_power_count > 0:
+                    self._ride_avg_power = self._ride_power_sum / self._ride_power_count
+            elif self._current_ride and not self.state.connected:
+                # end ride
+                try:
+                    ride = {
+                        "start": self._ride_start,
+                        "end": time.time(),
+                        "duration": time.time() - self._ride_start if self._ride_start else 0,
+                        "work_kj": round(self._ride_work, 2),
+                        "avg_power": round(self._ride_avg_power, 1),
+                        "max_power": round(self._ride_max_power, 1),
+                    }
+                    self._ride_history.append(ride)
+                    import json
+                    from pathlib import Path
+                    Path("rides").mkdir(exist_ok=True)
+                    with open(f"rides/ride_{int(self._ride_start or time.time())}.json", "w") as f:
+                        json.dump(ride, f)
+                except Exception:
+                    pass
+                self._current_ride = None
+        except Exception:
+            pass
 
     def connect(self):
         cfg = self.config.serial

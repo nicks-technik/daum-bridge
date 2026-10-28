@@ -278,14 +278,24 @@ class BLEFTMSBackend:
     async def _watch_adapter(self):
         while self._running:
             try:
-                await asyncio.sleep(15)
+                await asyncio.sleep(30)
             except asyncio.CancelledError:
                 break
             except Exception:
                 pass
-            # Basic adapter watch - could be enhanced with D-Bus
             try:
-                pass
+                if not self._bus or not DBUS_AVAILABLE:
+                    continue
+                # Check if we need to re-register
+                try:
+                    introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
+                    proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
+                    adapter = proxy_obj.get_interface('org.bluez.Adapter1')
+                    powered = await adapter.get_powered()
+                    if not powered:
+                        log.warning("BLE adapter not powered")
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -720,13 +730,22 @@ class BLEFTMSBackend:
                                     self._heart_rate_char.value = list(hr_packet)
                         except Exception:
                             pass
-                    # Cycling Power
+                    # Cycling Power (with optional crank data)
                     if self._cycling_power_char:
                         try:
                             pwr = int(getattr(state, 'power', 0) or 0)
-                            flags = 0x0000
+                            cad = int(getattr(state, 'cadence', 0) or 0)
+                            flags = 0x0020  # Crank Revolution Data
                             cp_packet = bytearray([flags & 0xFF, (flags >> 8) & 0xFF])
                             cp_packet += struct.pack('<h', pwr & 0xFFFF)
+                            # Crank revolutions (uint16) and crank event time (uint16, 1/1024s)
+                            if cad > 0:
+                                rev = int(time.time() * cad / 60) & 0xFFFF
+                                ctime = int((time.time() % 1) * 1024 * 60 / max(cad,1)) & 0xFFFF
+                            else:
+                                rev = 0
+                                ctime = 0
+                            cp_packet += struct.pack('<HH', rev, ctime)
                             if self._cycling_power_char.notifying or getattr(self._cycling_power_char, 'indicating', False):
                                 await self._cycling_power_char.send_notification(bytes(cp_packet))
                             else:

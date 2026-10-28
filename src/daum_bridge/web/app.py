@@ -41,6 +41,20 @@ def create_app(bridge) -> FastAPI:
         except Exception:
             return HTMLResponse("<html><body>config</body></html>")
 
+    @app.get("/logs", response_class=HTMLResponse)
+    async def logs_page(request: Request):
+        try:
+            return templates.TemplateResponse(request, "logs.html", {})
+        except Exception:
+            return HTMLResponse("<html><body>logs</body></html>")
+
+    @app.get("/history", response_class=HTMLResponse)
+    async def history_page(request: Request):
+        try:
+            return templates.TemplateResponse(request, "history.html", {})
+        except Exception:
+            return HTMLResponse("<html><body>history</body></html>")
+
     @app.get("/api/config")
     async def get_config():
         try:
@@ -180,6 +194,26 @@ def create_app(bridge) -> FastAPI:
                 "elapsed_time": getattr(s, 'elapsed_time', 0),
             }
         })
+
+    @app.get("/api/logs")
+    async def get_logs():
+        if not bridge:
+            return JSONResponse({"logs": []})
+        try:
+            logs = getattr(bridge, '_logs', [])[-200:]
+            return JSONResponse({"logs": logs})
+        except Exception:
+            return JSONResponse({"logs": []})
+
+    @app.get("/api/history")
+    async def get_history():
+        if not bridge:
+            return JSONResponse({"rides": []})
+        try:
+            rides = getattr(bridge, '_ride_history', [])[-50:]
+            return JSONResponse({"rides": rides})
+        except Exception:
+            return JSONResponse({"rides": []})
 
     @app.post("/api/shift/up")
     async def shift_up():
