@@ -84,12 +84,18 @@ class DaumProtocol:
     def request_person_data(self):
         if not self._address_found or self._address is None:
             return
-        self._write(self.build_command(DaumCmd.GET_PERSON_DATA, self._address))
+        try:
+            self._write(self.build_command(DaumCmd.GET_PERSON_DATA, self._address))
+        except Exception as e:
+            log.debug(f"request_person_data error: {e}")
 
     def request_run_data(self):
         if not self._address_found or self._address is None:
             return
-        self._write(self.build_command(DaumCmd.RUN_DATA, self._address))
+        try:
+            self._write(self.build_command(DaumCmd.RUN_DATA, self._address))
+        except Exception as e:
+            log.debug(f"request_run_data error: {e}")
 
     def set_watt(self, watts: int):
         if not self._address_found or self._address is None:
@@ -104,7 +110,10 @@ class DaumProtocol:
             log.debug("Cannot set gear - no address")
             return
         gear = max(1, int(gear))
-        self._write(self.build_command(DaumCmd.SET_GEAR, self._address, gear))
+        try:
+            self._write(self.build_command(DaumCmd.SET_GEAR, self._address, gear))
+        except Exception as e:
+            log.debug(f"set_gear error: {e}")
 
     def set_program(self, program: int):
         if not self._address_found or self._address is None:

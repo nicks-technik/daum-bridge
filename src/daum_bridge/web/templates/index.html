@@ -45,6 +45,9 @@
     </div>
     
     <div class="container">
+        <div style="margin-bottom: 15px;">
+            <a href="/config" style="color: #3b82f6; text-decoration: none;">⚙️ Config</a>
+        </div>
         <div class="status-bar">
             <div class="status-item">
                 <div class="status-dot" id="serial-dot"></div>
@@ -115,7 +118,7 @@
             <h2>🎯 ERG Mode Control</h2>
             <div class="erg-section">
                 <div class="erg-input">
-                    <input type="number" id="powerInput" value="150" min="0" max="1000" step="5">
+                    <input type="number" id="powerInput" value="150" min="10" max="800" step="5">
                     <button onclick="setPower()">Set Target Power</button>
                     <button onclick="setPower(0)" style="background: linear-gradient(135deg, #64748b 0%, #475569 100%);">Clear</button>
                 </div>
@@ -123,6 +126,10 @@
                     <div class="info-item">
                         <span class="info-label">ERG Control</span>
                         <span class="info-value" id="erg-status">Unknown</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Errors</span>
+                        <span class="info-value" id="err-count">0</span>
                     </div>
                 </div>
             </div>
@@ -287,6 +294,7 @@
                     bleDot.className = 'status-dot dot-red';
                     bleStatus.textContent = 'Off';
                 }
+                document.getElementById('err-count').textContent = data.consecutive_errors || 0;
             } catch (e) {}
         }
         

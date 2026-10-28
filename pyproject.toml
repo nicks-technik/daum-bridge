@@ -1,6 +1,6 @@
 [project]
 name = "daum-bridge"
-version = "0.0.7"
+version = "0.0.8"
 description = "Bridge Daum 8008 TRS RS232 ergometer to MyWhoosh via BLE FTMS (Linux focused)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,4 +29,5 @@ build-backend = "hatchling.build"
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.7",
+    "ruff>=0.6.0",
 ]

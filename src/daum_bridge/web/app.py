@@ -31,6 +31,27 @@ def create_app(bridge) -> FastAPI:
             "state": state,
         })
 
+    @app.get("/config", response_class=HTMLResponse)
+    async def config_page(request: Request):
+        return templates.TemplateResponse("config.html", {"request": request})
+
+    @app.get("/api/config")
+    async def get_config():
+        try:
+            from ..config import Config
+            import yaml
+            cfg = Config.load()
+            data = {
+                "serial": {"port": cfg.serial.port, "baudrate": cfg.serial.baudrate},
+                "ble": {"enabled": cfg.ble.enabled, "adapter": cfg.ble.adapter, "device_name": cfg.ble.device_name},
+                "web": {"enabled": cfg.web.enabled, "host": cfg.web.host, "port": cfg.web.port},
+                "logging": {"level": cfg.logging.level, "log_raw_frames": cfg.logging.log_raw_frames},
+                "bridge": {"poll_interval": cfg.bridge.poll_interval}
+            }
+            return JSONResponse(data)
+        except Exception as e:
+            return JSONResponse({"error": str(e)})
+
     @app.get("/api/state")
     async def api_state():
         if not bridge:

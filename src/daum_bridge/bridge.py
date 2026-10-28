@@ -91,15 +91,25 @@ class DaumBridge:
     def stop(self):
         self._running = False
         if self._thread:
-            self._thread.join(timeout=2)
+            try:
+                self._thread.join(timeout=2)
+            except Exception:
+                pass
         try:
             if self._ble_backend:
                 if self._ble_loop and self._ble_loop.is_running():
-                    asyncio.run_coroutine_threadsafe(self._ble_backend.stop(), self._ble_loop)
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(self._ble_backend.stop(), self._ble_loop)
+                        fut.result(timeout=2)
+                    except Exception as e:
+                        log.debug("BLE stop error: %s", e)
         except Exception as e:
             log.debug("BLE stop error: %s", e)
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
+        try:
+            if self.serial_port and hasattr(self.serial_port, 'is_open') and self.serial_port.is_open:
+                self.serial_port.close()
+        except Exception:
+            pass
         log.info("Bridge stopped")
 
     def _run_loop(self):
@@ -228,5 +238,6 @@ class DaumBridge:
         if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_gear(self._target_gear)
+                self._last_target_set = time.time()
             except Exception as e:
                 log.debug("set_gear error: %s", e)
