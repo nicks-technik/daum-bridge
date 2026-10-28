@@ -480,9 +480,20 @@ class BLEFTMSBackend:
                     state = self.bridge.state
                     # Indoor Bike Data
                     if self._indoor_bike_data_char:
-                        flags = 0x0042  # cadence present (bit 1) + power present (bit 6)
+                        # Include more fields if available: cadence (bit1), power (bit6), speed (bit0), distance (bit2)
+                        flags = 0x0047  # speed(0) + cadence(1) + distance(2) + power(6)
                         packet = bytearray()
                         packet += struct.pack('<H', flags)
+                        # Instantaneous Speed (uint16, 0.01 km/h)
+                        if hasattr(state, 'speed') and state.speed is not None:
+                            try:
+                                speed = int(round(float(state.speed) * 100)) & 0xFFFF
+                            except Exception:
+                                speed = 0
+                        else:
+                            speed = 0
+                        packet += struct.pack('<H', speed)
+                        # Instantaneous Cadence (uint16, 0.5 rpm)
                         if hasattr(state, 'cadence') and state.cadence is not None:
                             try:
                                 cadence = int(round(float(state.cadence) * 2)) & 0xFFFF
@@ -491,6 +502,16 @@ class BLEFTMSBackend:
                         else:
                             cadence = 0
                         packet += struct.pack('<H', cadence)
+                        # Total Distance (uint24) - meters
+                        if hasattr(state, 'total_distance') and state.total_distance is not None:
+                            try:
+                                dist_m = int(float(state.total_distance) * 1000) & 0xFFFFFF
+                            except Exception:
+                                dist_m = 0
+                        else:
+                            dist_m = 0
+                        packet += bytes([dist_m & 0xFF, (dist_m >> 8) & 0xFF, (dist_m >> 16) & 0xFF])
+                        # Instantaneous Power (sint16)
                         if hasattr(state, 'power') and state.power is not None:
                             try:
                                 power = int(float(state.power))
@@ -511,7 +532,6 @@ class BLEFTMSBackend:
                         try:
                             hr = int(state.heart_rate)
                             if 40 <= hr <= 220:
-                                # HRM: flags (0x00 = UINT8) + HR value
                                 hr_packet = bytearray([0x00, hr & 0xFF])
                                 if self._heart_rate_char.notifying:
                                     await self._heart_rate_char.send_notification(bytes(hr_packet))
@@ -519,7 +539,7 @@ class BLEFTMSBackend:
                                     self._heart_rate_char.value = list(hr_packet)
                         except Exception:
                             pass
-                    log.debug("FTMS IBP: cadence=%s power=%s hr=%s", getattr(state, 'cadence', None), getattr(state, 'power', None), getattr(state, 'heart_rate', None))
+                    log.debug("FTMS IBP: speed=%s cadence=%s dist=%s power=%s hr=%s", getattr(state, 'speed', None), getattr(state, 'cadence', None), getattr(state, 'total_distance', None), getattr(state, 'power', None), getattr(state, 'heart_rate', None))
             except Exception as e:
                 log.debug("Notify loop error: %s", e)
             await asyncio.sleep(0.25)

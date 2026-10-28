@@ -28,11 +28,15 @@ class DaumState:
     power: float = 0.0  # watts
     cadence: float = 0.0  # rpm
     speed: float = 0.0
+    distance: float = 0.0
+    elapsed_time: int = 0
     gear: int = 1
     heart_rate: int = 0
     program: int = 0
     connected: bool = False
     cockpit_address: Optional[int] = None
+    resistance_level: int = 0
+    total_distance: float = 0.0
 
 
 class DaumProtocol:
@@ -171,6 +175,20 @@ class DaumProtocol:
                                 gear = states[idx + 16]
                                 if isinstance(gear, int) and 1 <= gear <= 28:
                                     self.state.gear = gear
+                            # Speed at offset +7 (km/h or similar)
+                            if idx + 7 < n:
+                                spd = states[idx + 7]
+                                if isinstance(spd, int) and 0 <= spd <= 150:
+                                    self.state.speed = float(spd)
+                            # Distance/time attempts
+                            if idx + 10 < n:
+                                dist = states[idx + 10]
+                                if isinstance(dist, int) and 0 <= dist <= 9999:
+                                    self.state.total_distance = float(dist) / 10.0
+                            if idx + 12 < n:
+                                t = states[idx + 12]
+                                if isinstance(t, int) and 0 <= t <= 9999:
+                                    self.state.elapsed_time = int(t)
                             # Program at offset +2
                             if idx + 2 < n:
                                 program = states[idx + 2]

@@ -3,59 +3,135 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>daum-bridge</title>
+    <title>daum-bridge - Dashboard</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        h1 { color: #333; margin-top: 0; }
-        .status { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0; }
-        .card { background: #f9f9f9; padding: 15px; border-radius: 4px; text-align: center; }
-        .card .label { color: #666; font-size: 0.9em; }
-        .card .value { font-size: 1.8em; font-weight: bold; color: #333; }
-        .controls { margin: 30px 0; }
-        .gear-controls { display: flex; gap: 10px; align-items: center; justify-content: center; margin: 20px 0; }
-        button { padding: 10px 20px; font-size: 1em; cursor: pointer; border: none; border-radius: 4px; background: #007bff; color: white; }
-        button:hover { background: #0056b3; }
-        button:active { background: #004494; }
-        .gear-display { font-size: 2em; font-weight: bold; min-width: 60px; text-align: center; }
-        .connected { color: #28a745; }
-        .disconnected { color: #dc3545; }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+        .header { background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); padding: 20px 40px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .header h1 { margin: 0; font-size: 1.8em; }
+        .header .subtitle { opacity: 0.9; margin-top: 5px; font-size: 0.9em; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 30px 20px; }
+        .status-bar { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; padding: 15px 20px; background: #1e293b; border-radius: 8px; align-items: center; }
+        .status-item { display: flex; align-items: center; gap: 8px; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .dot-green { background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+        .dot-red { background: #ef4444; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .card { background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%); padding: 20px; border-radius: 10px; border: 1px solid #334155; text-align: center; transition: transform 0.2s; }
+        .card:hover { transform: translateY(-2px); border-color: #3b82f6; }
+        .card .label { color: #94a3b8; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .card .value { font-size: 2.5em; font-weight: bold; color: #fff; line-height: 1; }
+        .card .unit { color: #64748b; font-size: 0.9em; margin-top: 5px; }
+        .section { background: #1e293b; padding: 25px; border-radius: 10px; margin-bottom: 25px; border: 1px solid #334155; }
+        .section h2 { margin: 0 0 20px 0; font-size: 1.3em; display: flex; align-items: center; gap: 10px; }
+        .gear-controls { display: flex; gap: 15px; align-items: center; justify-content: center; margin: 20px 0; }
+        .gear-display { font-size: 2.5em; font-weight: bold; min-width: 100px; text-align: center; background: #0f172a; padding: 15px 30px; border-radius: 8px; border: 2px solid #3b82f6; }
+        button { padding: 12px 24px; font-size: 1em; cursor: pointer; border: none; border-radius: 6px; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; font-weight: 600; transition: all 0.2s; }
+        button:hover { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
+        button:active { transform: scale(0.98); }
+        .erg-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: center; }
+        .erg-input { display: flex; gap: 10px; align-items: center; }
+        input[type="number"] { padding: 10px; font-size: 1.1em; background: #0f172a; border: 1px solid #475569; color: white; border-radius: 6px; width: 100px; }
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+        .info-item { background: #0f172a; padding: 10px 15px; border-radius: 6px; display: flex; justify-content: space-between; }
+        .info-label { color: #94a3b8; }
+        .info-value { color: #e2e8f0; font-weight: 600; }
     </style>
 </head>
 <body>
+    <div class="header">
+        <h1>🚴 daum-bridge Dashboard</h1>
+        <div class="subtitle">Daum 8008 TRS → MyWhoosh via BLE FTMS</div>
+    </div>
+    
     <div class="container">
-        <h1>daum-bridge</h1>
-        <p>Status: <span id="status" class="disconnected">Disconnected</span></p>
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-dot" id="serial-dot"></div>
+                <span>Serial: <strong id="serial-status">Unknown</strong></span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" id="ble-dot"></div>
+                <span>BLE: <strong id="ble-status">Unknown</strong></span>
+            </div>
+            <div class="status-item">
+                <span>Address: <strong id="addr">-</strong></span>
+            </div>
+            <div class="status-item">
+                <span>Program: <strong id="program">-</strong></span>
+            </div>
+        </div>
         
-        <div class="status">
+        <div class="grid">
             <div class="card">
                 <div class="label">Power</div>
                 <div class="value" id="power">0</div>
-                <div>W</div>
+                <div class="unit">Watts</div>
             </div>
             <div class="card">
                 <div class="label">Cadence</div>
                 <div class="value" id="cadence">0</div>
-                <div>rpm</div>
+                <div class="unit">RPM</div>
             </div>
             <div class="card">
                 <div class="label">Speed</div>
-                <div class="value" id="speed">0</div>
-                <div>km/h</div>
+                <div class="value" id="speed">0.0</div>
+                <div class="unit">km/h</div>
             </div>
             <div class="card">
                 <div class="label">Heart Rate</div>
                 <div class="value" id="hr">0</div>
-                <div>bpm</div>
+                <div class="unit">BPM</div>
+            </div>
+            <div class="card">
+                <div class="label">Distance</div>
+                <div class="value" id="distance">0.0</div>
+                <div class="unit">km</div>
+            </div>
+            <div class="card">
+                <div class="label">Target Power</div>
+                <div class="value" id="target">0</div>
+                <div class="unit">Watts (ERG)</div>
             </div>
         </div>
         
-        <div class="controls">
-            <h2>Gear Shifting</h2>
+        <div class="section">
+            <h2>⚙️ Gear Control</h2>
             <div class="gear-controls">
-                <button onclick="shiftDown()">▼ Shift Down</button>
-                <div class="gear-display">Gear <span id="gear">1</span></div>
-                <button onclick="shiftUp()">▲ Shift Up</button>
+                <button onclick="shiftDown()">◀ Shift Down</button>
+                <div class="gear-display">GEAR <span id="gear">1</span></div>
+                <button onclick="shiftUp()">Shift Up ▶</button>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🎯 ERG Mode Control</h2>
+            <div class="erg-section">
+                <div class="erg-input">
+                    <input type="number" id="powerInput" value="150" min="0" max="1000" step="5">
+                    <button onclick="setPower()">Set Target Power</button>
+                    <button onclick="setPower(0)" style="background: linear-gradient(135deg, #64748b 0%, #475569 100%);">Clear</button>
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">ERG Control</span>
+                        <span class="info-value" id="erg-status">Unknown</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>📊 Additional Info</h2>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Elapsed Time</span>
+                    <span class="info-value" id="time">0s</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Resistance</span>
+                    <span class="info-value" id="resist">0</span>
+                </div>
             </div>
         </div>
     </div>
@@ -70,31 +146,79 @@
                 document.getElementById('speed').textContent = (data.speed || 0).toFixed(1);
                 document.getElementById('hr').textContent = data.heart_rate || 0;
                 document.getElementById('gear').textContent = data.gear || 1;
-                const status = document.getElementById('status');
+                document.getElementById('distance').textContent = (data.distance || 0).toFixed(2);
+                document.getElementById('target').textContent = data.target_watt || 0;
+                document.getElementById('program').textContent = data.program || '-';
+                document.getElementById('addr').textContent = data.cockpit_address !== null ? '0x' + data.cockpit_address.toString(16).padStart(2,'0').toUpperCase() : '-';
+                document.getElementById('resist').textContent = data.resistance_level || 0;
+                
+                const serialDot = document.getElementById('serial-dot');
+                const serialStatus = document.getElementById('serial-status');
                 if (data.connected) {
-                    status.textContent = 'Connected to Daum 8008 TRS';
-                    status.className = 'connected';
+                    serialDot.className = 'status-dot dot-green';
+                    serialStatus.textContent = 'Connected';
                 } else {
-                    status.textContent = 'Disconnected';
-                    status.className = 'disconnected';
+                    serialDot.className = 'status-dot dot-red';
+                    serialStatus.textContent = 'Disconnected';
+                }
+                
+                const ergStatus = document.getElementById('erg-status');
+                if (data.erg_control_granted) {
+                    ergStatus.textContent = 'Granted';
+                    ergStatus.style.color = '#22c55e';
+                } else {
+                    ergStatus.textContent = 'Not Granted';
+                    ergStatus.style.color = '#f59e0b';
+                }
+                
+                if (data.elapsed_time) {
+                    document.getElementById('time').textContent = data.elapsed_time + 's';
                 }
             } catch (e) {
                 console.error(e);
             }
         }
         
+        async function updateDiag() {
+            try {
+                const res = await fetch('/api/diagnostics');
+                const data = await res.json();
+                const bleDot = document.getElementById('ble-dot');
+                const bleStatus = document.getElementById('ble-status');
+                if (data.ble_backend_running) {
+                    bleDot.className = 'status-dot dot-green';
+                    bleStatus.textContent = 'Advertising';
+                } else {
+                    bleDot.className = 'status-dot dot-red';
+                    bleStatus.textContent = 'Off';
+                }
+            } catch (e) {}
+        }
+        
         async function shiftUp() {
             await fetch('/api/shift/up', { method: 'POST' });
-            updateState();
+            setTimeout(updateState, 200);
         }
         
         async function shiftDown() {
             await fetch('/api/shift/down', { method: 'POST' });
-            updateState();
+            setTimeout(updateState, 200);
         }
         
-        setInterval(updateState, 1000);
+        async function setPower(val) {
+            const watts = val !== undefined ? val : parseInt(document.getElementById('powerInput').value) || 0;
+            await fetch('/api/target/watt', { 
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({watts: watts})
+            });
+            setTimeout(updateState, 200);
+        }
+        
+        setInterval(updateState, 500);
+        setInterval(updateDiag, 2000);
         updateState();
+        updateDiag();
     </script>
 </body>
 </html>

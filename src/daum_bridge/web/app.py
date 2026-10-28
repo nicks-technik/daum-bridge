@@ -45,6 +45,56 @@ def create_app(bridge) -> FastAPI:
             "heart_rate": s.heart_rate,
             "program": s.program,
             "cockpit_address": s.cockpit_address,
+            "distance": getattr(s, 'total_distance', 0.0),
+            "total_distance": getattr(s, 'total_distance', 0.0),
+            "elapsed_time": getattr(s, 'elapsed_time', 0),
+            "resistance_level": getattr(s, 'resistance_level', 0),
+            "target_watt": getattr(bridge, '_target_watt', 0),
+            "erg_control_granted": getattr(bridge, '_erg_control_granted', False),
+        })
+
+    @app.get("/api/status")
+    async def api_status():
+        if not bridge:
+            return JSONResponse({"connected": False})
+        s = bridge.state
+        return JSONResponse({
+            "connected": s.connected,
+            "power": s.power,
+            "cadence": s.cadence,
+            "speed": s.speed,
+            "gear": s.gear,
+            "heart_rate": s.heart_rate,
+            "program": s.program,
+            "cockpit_address": f"0x{s.cockpit_address:02X}" if getattr(s, 'cockpit_address', None) is not None else None,
+            "distance": getattr(s, 'total_distance', 0.0),
+            "elapsed_time": getattr(s, 'elapsed_time', 0),
+            "target_watt": getattr(bridge, '_target_watt', 0),
+        })
+
+    @app.get("/api/diagnostics")
+    async def diagnostics():
+        if not bridge:
+            return JSONResponse({"error": "no bridge"})
+        s = bridge.state
+        return JSONResponse({
+            "serial_connected": getattr(bridge.protocol, '_address_found', False) if bridge.protocol else False,
+            "ble_enabled": getattr(getattr(bridge.config, 'ble', None), 'enabled', False),
+            "ble_backend_running": bridge._ble_backend is not None,
+            "target_watt": getattr(bridge, '_target_watt', 0),
+            "erg_control_granted": getattr(bridge, '_erg_control_granted', False),
+            "consecutive_errors": getattr(bridge, '_consecutive_errors', 0),
+            "state": {
+                "power": s.power,
+                "cadence": s.cadence,
+                "speed": s.speed,
+                "gear": s.gear,
+                "heart_rate": s.heart_rate,
+                "program": s.program,
+                "connected": s.connected,
+                "distance": getattr(s, 'total_distance', 0.0),
+                "elapsed_time": getattr(s, 'elapsed_time', 0),
+            }
         })
 
     @app.post("/api/shift/up")

@@ -26,6 +26,10 @@ class DaumBridge:
         self._ble_backend = None
         self._ble_loop = None
         self._ble_thread = None
+        self._erg_control_granted = False
+        self._last_target_set = 0.0
+        self._consecutive_errors = 0
+        self._last_reconnect = 0.0
 
     def add_state_callback(self, cb: Callable[[DaumState], None]):
         self._callbacks.append(cb)
@@ -92,8 +96,12 @@ class DaumBridge:
         log.info("Bridge stopped")
 
     def _run_loop(self):
+        if not self.protocol:
+            try:
+                self.connect()
+            except Exception as e:
+                log.error(f"Initial connect failed: {e}")
         assert self.protocol is not None
-        # Start discovery
         try:
             self.protocol.request_address()
         except Exception as e:
@@ -102,6 +110,7 @@ class DaumBridge:
         last_addr_req = time.time()
         last_watt_apply = 0.0
         last_target_watt_sent = -1
+        last_health_check = time.time()
         while self._running:
             try:
                 # Read
@@ -110,8 +119,10 @@ class DaumBridge:
                     if data:
                         self.protocol.parse(data)
                         self.state = self.protocol.state
+                        self._consecutive_errors = 0
                         self._notify()
                 except Exception as e:
+                    self._consecutive_errors += 1
                     log.debug(f"Serial read/parse error: {e}")
                 # Discovery/reconnect
                 if not getattr(self.protocol, '_address_found', False):
@@ -121,6 +132,7 @@ class DaumBridge:
                             last_addr_req = time.time()
                         except Exception as e:
                             log.debug(f"Address request error: {e}")
+                            self._consecutive_errors += 1
                 else:
                     # Poll run data
                     if time.time() - last_run_data > getattr(self.config.bridge, 'poll_interval', 0.5):
@@ -128,23 +140,45 @@ class DaumBridge:
                             self.protocol.request_run_data()
                             self.protocol.request_person_data()
                             last_run_data = time.time()
+                            self._consecutive_errors = 0
                         except Exception as e:
                             log.debug(f"Run data request error: {e}")
-                    # Re-apply target watt periodically to be safe
-                    if self._target_watt >= 0 and time.time() - last_watt_apply > 1.0:
-                        try:
-                            if last_target_watt_sent != self._target_watt:
-                                self.protocol.set_watt(self._target_watt)
-                                last_target_watt_sent = self._target_watt
-                            else:
-                                # re-send periodically
-                                self.protocol.set_watt(self._target_watt)
-                            last_watt_apply = time.time()
-                        except Exception as e:
-                            log.debug(f"Re-apply watt error: {e}")
+                            self._consecutive_errors += 1
+                    # Re-apply target watt aggressively for ERG
+                    if self._target_watt >= 0:
+                        interval = 0.5 if self._erg_control_granted else 1.0
+                        if time.time() - last_watt_apply > interval:
+                            try:
+                                if last_target_watt_sent != self._target_watt:
+                                    self.protocol.set_watt(self._target_watt)
+                                    last_target_watt_sent = self._target_watt
+                                    self._last_target_set = time.time()
+                                else:
+                                    self.protocol.set_watt(self._target_watt)
+                                    self._last_target_set = time.time()
+                                last_watt_apply = time.time()
+                            except Exception as e:
+                                log.debug(f"Re-apply watt error: {e}")
+                # Health check & auto-reconnect
+                if self._consecutive_errors > 20 and time.time() - self._last_reconnect > 5.0:
+                    log.warning("Too many serial errors, attempting reconnect...")
+                    try:
+                        if self.serial_port and hasattr(self.serial_port, 'close'):
+                            try:
+                                self.serial_port.close()
+                            except Exception:
+                                pass
+                        self.protocol = None
+                        self.connect()
+                        self.protocol.request_address()
+                        self._consecutive_errors = 0
+                        self._last_reconnect = time.time()
+                    except Exception as e:
+                        log.error(f"Reconnect failed: {e}")
                 time.sleep(0.01)
             except Exception as e:
                 log.error("Bridge loop error: %s", e)
+                self._consecutive_errors += 1
                 time.sleep(getattr(self.config.bridge, 'reconnect_delay', 2.0))
 
     def set_target_watt(self, watts: int):
