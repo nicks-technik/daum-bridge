@@ -44,6 +44,14 @@ class BLEConfig:
 
 
 @dataclass
+class ANTConfig:
+    enabled: bool = False
+    device_path: str = ""  # e.g., /dev/ttyUSB0 or Windows COM
+    network_key: str = ""  # optional
+
+
+
+@dataclass
 class WebConfig:
     enabled: bool = True
     host: str = "0.0.0.0"
@@ -61,6 +69,7 @@ class Config:
     serial: SerialConfig = field(default_factory=SerialConfig)
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
     ble: BLEConfig = field(default_factory=BLEConfig)
+    ant: ANTConfig = field(default_factory=ANTConfig)
     web: WebConfig = field(default_factory=WebConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -92,6 +101,13 @@ class Config:
                     enabled=bool(bl.get("enabled", True)),
                     adapter=str(bl.get("adapter", "hci0")),
                     device_name=str(bl.get("device_name", "DAUM-8008-TRS")),
+                )
+            if "ant" in data and isinstance(data["ant"], dict):
+                a = data["ant"]
+                cfg.ant = ANTConfig(
+                    enabled=bool(a.get("enabled", False)),
+                    device_path=str(a.get("device_path", "") or ""),
+                    network_key=str(a.get("network_key", "") or ""),
                 )
             if "web" in data and isinstance(data["web"], dict):
                 w = data["web"]

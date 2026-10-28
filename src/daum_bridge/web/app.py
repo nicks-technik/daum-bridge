@@ -44,6 +44,7 @@ def create_app(bridge) -> FastAPI:
             data = {
                 "serial": {"port": cfg.serial.port, "baudrate": cfg.serial.baudrate},
                 "ble": {"enabled": cfg.ble.enabled, "adapter": cfg.ble.adapter, "device_name": cfg.ble.device_name},
+                "ant": {"enabled": getattr(cfg.ant, 'enabled', False), "device_path": getattr(cfg.ant, 'device_path', "")},
                 "web": {"enabled": cfg.web.enabled, "host": cfg.web.host, "port": cfg.web.port},
                 "logging": {"level": cfg.logging.level, "log_raw_frames": cfg.logging.log_raw_frames},
                 "bridge": {"poll_interval": cfg.bridge.poll_interval}
@@ -76,6 +77,12 @@ def create_app(bridge) -> FastAPI:
                     cfg['ble']['adapter'] = data['ble']['adapter']
                 if 'enabled' in data['ble']:
                     cfg['ble']['enabled'] = bool(data['ble']['enabled'])
+            if 'ant' in data:
+                cfg.setdefault('ant', {})
+                if 'enabled' in data['ant']:
+                    cfg['ant']['enabled'] = bool(data['ant']['enabled'])
+                if 'device_path' in data['ant']:
+                    cfg['ant']['device_path'] = data['ant']['device_path'] or ''
             if 'logging' in data:
                 cfg.setdefault('logging', {})
                 if 'log_raw_frames' in data['logging']:

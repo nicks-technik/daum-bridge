@@ -26,6 +26,7 @@ class DaumBridge:
         self._ble_backend = None
         self._ble_loop = None
         self._ble_thread = None
+        self._ant_backend = None
         self._erg_control_granted = False
         self._last_target_set = 0.0
         self._consecutive_errors = 0
@@ -92,6 +93,17 @@ class DaumBridge:
                 self._ble_thread.start()
         except Exception as e:
             log.warning("Failed to start BLE backend: %s", e)
+        # Start ANT+ backend if enabled
+        try:
+            if getattr(self.config, "ant", None) and getattr(self.config.ant, "enabled", False):
+                from .backends.ant_fe import ANTFEBackend
+                self._ant_backend = ANTFEBackend(self, self.config)
+                try:
+                    self._ant_backend.start()
+                except Exception as e:
+                    log.warning("Failed to start ANT+ backend: %s", e)
+        except Exception as e:
+            log.debug("ANT+ backend not started: %s", e)
 
     def stop(self):
         self._running = False
