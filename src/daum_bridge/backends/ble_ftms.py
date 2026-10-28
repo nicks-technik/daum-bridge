@@ -174,6 +174,8 @@ class BLEFTMSBackend:
         self._indoor_bike_data_char = None
         self._control_point_char = None
         self._control_point_enabled = False
+        self._fitness_machine_status_char = None
+        self._last_cp_req = None
 
     async def start(self):
         log.info("Starting BLE FTMS backend on %s as %s", self._adapter, self._device_name)
@@ -243,9 +245,23 @@ class BLEFTMSBackend:
         # Fitness Machine Feature (read)
         feature_path = f'{ftms_service_path}/char0'
         feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path, bus=self._bus)
-        # Feature bits: bit 1 = Cadence supported, bit 6 = Power Measurement Supported (simplified)
-        features = 0x00000042
-        feature_char.value = list(struct.pack('<I', features))
+        # FTMS features (bits)
+        # bit 0: Avg Speed supported, bit 1: Cadence supported, bit 2: Total Distance supported
+        # bit 3: Inclination supported, bit 4: Elevation Gain supported, bit 5: Pace supported
+        # bit 6: Step Count supported, bit 7: Resistance Level supported
+        # bit 8: Stride Count supported, bit 9: Expended Energy supported, bit 10: Heart Rate Measurement supported
+        # bit 11: Metabolic Equivalent supported, bit 12: Elapsed Time supported, bit 13: Remaining Time supported
+        # bit 14: Power Measurement supported, bit 15: Force on Belt and Power Output supported
+        # bit 16: User Data Retention supported
+        # Target Setting features
+        fitness_machine_features = 0x00000000
+        target_setting_features = 0x00000000
+        # Cadence (bit 1) + Power (bit 14)
+        fitness_machine_features |= (1 << 1) | (1 << 14)
+        # Target Power supported (bit 1 in target setting features)
+        target_setting_features |= (1 << 1)
+        features = struct.pack('<II', fitness_machine_features, target_setting_features)
+        feature_char.value = list(features)
         self._bus.export(feature_path, feature_char)
         self._objects.append(feature_char)
         
@@ -259,6 +275,7 @@ class BLEFTMSBackend:
         # Fitness Machine Status (notify)
         status_path = f'{ftms_service_path}/char2'
         status_char = Characteristic(status_path, FITNESS_MACHINE_STATUS_UUID, ['notify'], ftms_service_path, bus=self._bus)
+        self._fitness_machine_status_char = status_char
         self._bus.export(status_path, status_char)
         self._objects.append(status_char)
         
@@ -320,26 +337,75 @@ class BLEFTMSBackend:
             if not data:
                 return
             op_code = data[0]
+            self._last_cp_req = op_code
             log.info(f"Control Point op: 0x{op_code:02X} data={data.hex()}")
             # Request Control (0x00)
             if op_code == 0x00:
                 self._control_point_enabled = True
-                # Send success response
-                self._send_cp_response(0x00, 0x01, 0x00)  # Request Control, Success
-            # Set Target Power (0x05) - format: op(1) + power(2 little endian)
+                self._send_cp_response(0x00, 0x01, 0x00)
+                self._send_fitness_machine_status(0x01)  # Started
+                return
+            # Reset (0x01)
+            elif op_code == 0x01:
+                self._control_point_enabled = False
+                if self.bridge and hasattr(self.bridge, 'set_target_watt'):
+                    try:
+                        self.bridge.set_target_watt(0)
+                    except Exception:
+                        pass
+                self._send_cp_response(0x01, 0x01, 0x00)
+                self._send_fitness_machine_status(0x02)  # Stopped
+                return
+            # Start or Resume (0x07)
+            elif op_code == 0x07:
+                if not self._control_point_enabled:
+                    self._send_cp_response(0x07, 0x02, 0x02)  # Not permitted
+                    return
+                self._send_cp_response(0x07, 0x01, 0x00)
+                self._send_fitness_machine_status(0x03)  # Paused/Resumed context - use general
+                self._send_fitness_machine_status(0x01)
+                return
+            # Stop or Pause (0x08)
+            elif op_code == 0x08:
+                if not self._control_point_enabled:
+                    self._send_cp_response(0x08, 0x02, 0x02)
+                    return
+                self._send_cp_response(0x08, 0x01, 0x00)
+                self._send_fitness_machine_status(0x04)
+                return
+            # Set Target Power (0x05) - format: op(1) + power(2 little endian, signed)
             elif op_code == 0x05 and len(data) >= 3:
-                power = struct.unpack('<h', data[1:3])[0]
+                if not self._control_point_enabled:
+                    self._send_cp_response(0x05, 0x02, 0x02)  # Not permitted
+                    return
+                try:
+                    power = struct.unpack('<h', data[1:3])[0]
+                except Exception:
+                    self._send_cp_response(0x05, 0x03, 0x01)  # Invalid Parameter
+                    return
                 log.info(f"FTMS set target power: {power}W")
                 if self.bridge and hasattr(self.bridge, 'set_target_watt'):
                     try:
                         self.bridge.set_target_watt(int(power))
                     except Exception as e:
                         log.debug(f"Error setting power: {e}")
-                self._send_cp_response(0x05, 0x01, 0x00)  # Success
-            # Reset (0x01)
-            elif op_code == 0x01:
-                self._control_point_enabled = False
-                self._send_cp_response(0x01, 0x01, 0x00)
+                self._send_cp_response(0x05, 0x01, 0x00)
+                self._send_fitness_machine_status(0x07)  # Target Power Changed (0x07)
+                return
+            # Set Indoor Bike Simulation Parameters (0x11) - ignore but respond
+            elif op_code == 0x11 and len(data) >= 7:
+                if not self._control_point_enabled:
+                    self._send_cp_response(0x11, 0x02, 0x02)
+                    return
+                self._send_cp_response(0x11, 0x01, 0x00)
+                return
+            # Set Resistance Level (0x04)
+            elif op_code == 0x04 and len(data) >= 3:
+                if not self._control_point_enabled:
+                    self._send_cp_response(0x04, 0x02, 0x02)
+                    return
+                self._send_cp_response(0x04, 0x01, 0x00)
+                return
             else:
                 # Not supported
                 self._send_cp_response(op_code, 0x02, 0x07)
@@ -350,14 +416,41 @@ class BLEFTMSBackend:
         try:
             if not self._control_point_char:
                 return
-            # Response: 0x80 (Response Code) + Request Op Code + Result Code [+ Error Code if needed]
-            resp = bytearray([0x80, request_op, result_code])
-            if result_code != 0x01 and error_code != 0x00:
-                resp.append(error_code)
+            resp = bytearray([0x80, request_op & 0xFF, result_code & 0xFF])
+            if result_code != 0x01:
+                if result_code == 0x03 and error_code == 0x00:  # Invalid Parameter
+                    resp.append(error_code)
+                elif error_code != 0x00:
+                    resp.append(error_code)
             self._control_point_char.value = list(resp)
+            # Try to indicate if possible
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._control_point_char.send_notification(bytes(resp)))
+            except Exception:
+                pass
             log.debug(f"CP response: {bytes(resp).hex()}")
         except Exception as e:
             log.debug(f"CP response error: {e}")
+
+    def _send_fitness_machine_status(self, status: int, data: bytes = b''):
+        try:
+            if not self._fitness_machine_status_char:
+                return
+            packet = bytearray([status & 0xFF]) + bytearray(data)
+            self._fitness_machine_status_char.value = list(packet)
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._fitness_machine_status_char.send_notification(bytes(packet)))
+            except Exception:
+                pass
+            log.debug(f"FTMS status: 0x{status:02X}")
+        except Exception as e:
+            log.debug(f"Status send error: {e}")
 
     async def _notify_loop(self):
         while self._running:

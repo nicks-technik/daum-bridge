@@ -94,38 +94,62 @@ class DaumBridge:
     def _run_loop(self):
         assert self.protocol is not None
         # Start discovery
-        self.protocol.request_address()
+        try:
+            self.protocol.request_address()
+        except Exception as e:
+            log.debug(f"Initial address request error: {e}")
         last_run_data = 0.0
         last_addr_req = time.time()
+        last_watt_apply = 0.0
+        last_target_watt_sent = -1
         while self._running:
             try:
                 # Read
-                data = self.protocol._read_available()
-                if data:
-                    self.protocol.parse(data)
-                    self.state = self.protocol.state
-                    self._notify()
-                # Discovery
-                if not self.protocol._address_found and time.time() - last_addr_req > 2.0:
-                    self.protocol.request_address()
-                    last_addr_req = time.time()
-                # Poll run data
-                if self.protocol._address_found and time.time() - last_run_data > self.config.bridge.poll_interval:
-                    self.protocol.request_run_data()
-                    self.protocol.request_person_data()
-                    last_run_data = time.time()
-                # Apply targets if set
-                if self.protocol._address_found and self._target_watt >= 0:
-                    # Only send if changed? Simple approach
-                    pass
+                try:
+                    data = self.protocol._read_available()
+                    if data:
+                        self.protocol.parse(data)
+                        self.state = self.protocol.state
+                        self._notify()
+                except Exception as e:
+                    log.debug(f"Serial read/parse error: {e}")
+                # Discovery/reconnect
+                if not getattr(self.protocol, '_address_found', False):
+                    if time.time() - last_addr_req > 2.0:
+                        try:
+                            self.protocol.request_address()
+                            last_addr_req = time.time()
+                        except Exception as e:
+                            log.debug(f"Address request error: {e}")
+                else:
+                    # Poll run data
+                    if time.time() - last_run_data > getattr(self.config.bridge, 'poll_interval', 0.5):
+                        try:
+                            self.protocol.request_run_data()
+                            self.protocol.request_person_data()
+                            last_run_data = time.time()
+                        except Exception as e:
+                            log.debug(f"Run data request error: {e}")
+                    # Re-apply target watt periodically to be safe
+                    if self._target_watt >= 0 and time.time() - last_watt_apply > 1.0:
+                        try:
+                            if last_target_watt_sent != self._target_watt:
+                                self.protocol.set_watt(self._target_watt)
+                                last_target_watt_sent = self._target_watt
+                            else:
+                                # re-send periodically
+                                self.protocol.set_watt(self._target_watt)
+                            last_watt_apply = time.time()
+                        except Exception as e:
+                            log.debug(f"Re-apply watt error: {e}")
                 time.sleep(0.01)
             except Exception as e:
                 log.error("Bridge loop error: %s", e)
-                time.sleep(self.config.bridge.reconnect_delay)
+                time.sleep(getattr(self.config.bridge, 'reconnect_delay', 2.0))
 
     def set_target_watt(self, watts: int):
         self._target_watt = max(0, int(watts))
-        if self.protocol and self.protocol._address_found:
+        if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_watt(self._target_watt)
             except Exception as e:
