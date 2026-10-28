@@ -12,6 +12,7 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+OPENANT_AVAILABLE = False
 try:
     from openant.devices import ANTDevice
     from openant.devices.fitness_equipment import FitnessEquipment, FitnessEquipmentType
