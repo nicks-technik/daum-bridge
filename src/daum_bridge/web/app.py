@@ -51,6 +51,9 @@ def create_app(bridge) -> FastAPI:
             "resistance_level": getattr(s, 'resistance_level', 0),
             "target_watt": getattr(bridge, '_target_watt', 0),
             "erg_control_granted": getattr(bridge, '_erg_control_granted', False),
+            "app_connected": getattr(bridge, '_app_connected', False) or getattr(bridge, '_client_connected', False),
+            "client_connected": getattr(bridge, '_client_connected', False),
+            "virtual_shifting": getattr(bridge, '_virtual_shifting_enabled', True),
         })
 
     @app.get("/api/status")

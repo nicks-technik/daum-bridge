@@ -30,6 +30,9 @@ class DaumBridge:
         self._last_target_set = 0.0
         self._consecutive_errors = 0
         self._last_reconnect = 0.0
+        self._client_connected = False
+        self._app_connected = False
+        self._virtual_shifting_enabled = True
 
     def add_state_callback(self, cb: Callable[[DaumState], None]):
         self._callbacks.append(cb)

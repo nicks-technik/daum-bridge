@@ -55,6 +55,13 @@
                 <span>BLE: <strong id="ble-status">Unknown</strong></span>
             </div>
             <div class="status-item">
+                <div class="status-dot" id="app-dot"></div>
+                <span>App (MyWhoosh/ZWIFT): <strong id="app-status">Not Connected</strong></span>
+            </div>
+            <div class="status-item">
+                <span>Virtual Shifting: <strong id="vs-status">Enabled</strong></span>
+            </div>
+            <div class="status-item">
                 <span>Address: <strong id="addr">-</strong></span>
             </div>
             <div class="status-item">
@@ -223,6 +230,17 @@
                     serialDot.className = 'status-dot dot-red';
                     serialStatus.textContent = 'Disconnected';
                 }
+                
+                const appDot = document.getElementById('app-dot');
+                const appStatus = document.getElementById('app-status');
+                if (data.app_connected || data.client_connected) {
+                    appDot.className = 'status-dot dot-green';
+                    appStatus.textContent = 'Connected';
+                } else {
+                    appDot.className = 'status-dot dot-red';
+                    appStatus.textContent = 'Not Connected';
+                }
+                document.getElementById('vs-status').textContent = data.virtual_shifting ? 'Enabled' : 'Disabled';
                 
                 const ergStatus = document.getElementById('erg-status');
                 if (data.erg_control_granted) {

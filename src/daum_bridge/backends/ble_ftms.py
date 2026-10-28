@@ -93,13 +93,14 @@ class Service(ServiceInterface):
 
 
 class Characteristic(ServiceInterface):
-    def __init__(self, object_path, uuid, flags, service_path, bus=None):
+    def __init__(self, object_path, uuid, flags, service_path, bus=None, backend=None):
         super().__init__('org.bluez.GattCharacteristic1')
         self.path = object_path
         self.uuid = uuid
         self.flags = flags
         self.service_path = service_path
         self.bus = bus
+        self._backend = backend
         self.value = []
         self.notifying = False
         self._notify_callback = None
@@ -128,6 +129,15 @@ class Characteristic(ServiceInterface):
     def StartNotify(self):
         log.info(f"StartNotify on {self.uuid}")
         self.notifying = True
+        try:
+            # mark as app connected
+            if hasattr(self, '_backend') and self._backend:
+                if hasattr(self._backend.bridge, '_app_connected'):
+                    self._backend.bridge._app_connected = True
+                if hasattr(self._backend.bridge, '_client_connected'):
+                    self._backend.bridge._client_connected = True
+        except Exception:
+            pass
 
     @method()
     def StopNotify(self):
@@ -182,10 +192,17 @@ class BLEFTMSBackend:
         self._fitness_machine_status_char = None
         self._last_cp_req = None
         self._heart_rate_char = None
+        self._clients_connected = 0
+        self.virtual_shifting_enabled = True
 
     async def start(self):
         log.info("Starting BLE FTMS backend on %s as %s", self._adapter, self._device_name)
         self._running = True
+        if self.bridge:
+            if hasattr(self.bridge, '_app_connected'):
+                self.bridge._app_connected = False
+            if hasattr(self.bridge, '_client_connected'):
+                self.bridge._client_connected = False
 
         if not DBUS_AVAILABLE:
             log.warning("dbus-next not available; BLE FTMS peripheral cannot run on this platform")
@@ -250,12 +267,10 @@ class BLEFTMSBackend:
         
         # Fitness Machine Feature (read)
         feature_path = f'{ftms_service_path}/char0'
-        feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path, bus=self._bus)
+        feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path, bus=self._bus, backend=self)
         fitness_machine_features = 0x00000000
         target_setting_features = 0x00000000
-        # Cadence (bit 1) + Power (bit 14) + Heart Rate Measurement (bit 10)
         fitness_machine_features |= (1 << 1) | (1 << 10) | (1 << 14)
-        # Target Power supported (bit 1) + Resistance Level (bit 2)
         target_setting_features |= (1 << 1) | (1 << 2)
         features = struct.pack('<II', fitness_machine_features, target_setting_features)
         feature_char.value = list(features)
@@ -264,31 +279,30 @@ class BLEFTMSBackend:
         
         # Indoor Bike Data (notify)
         ibd_path = f'{ftms_service_path}/char1'
-        ibd_char = Characteristic(ibd_path, INDOOR_BIKE_DATA_UUID, ['notify'], ftms_service_path, bus=self._bus)
+        ibd_char = Characteristic(ibd_path, INDOOR_BIKE_DATA_UUID, ['notify'], ftms_service_path, bus=self._bus, backend=self)
         self._indoor_bike_data_char = ibd_char
         self._bus.export(ibd_path, ibd_char)
         self._objects.append(ibd_char)
         
         # Fitness Machine Status (notify)
         status_path = f'{ftms_service_path}/char2'
-        status_char = Characteristic(status_path, FITNESS_MACHINE_STATUS_UUID, ['notify'], ftms_service_path, bus=self._bus)
+        status_char = Characteristic(status_path, FITNESS_MACHINE_STATUS_UUID, ['notify'], ftms_service_path, bus=self._bus, backend=self)
         self._fitness_machine_status_char = status_char
         self._bus.export(status_path, status_char)
         self._objects.append(status_char)
         
         # Fitness Machine Control Point (write, indicate)
         cp_path = f'{ftms_service_path}/char3'
-        cp_char = Characteristic(cp_path, FITNESS_MACHINE_CONTROL_POINT_UUID, ['write', 'indicate'], ftms_service_path, bus=self._bus)
+        cp_char = Characteristic(cp_path, FITNESS_MACHINE_CONTROL_POINT_UUID, ['write', 'indicate'], ftms_service_path, bus=self._bus, backend=self)
         cp_char._notify_callback = self._handle_control_point
         self._control_point_char = cp_char
         self._bus.export(cp_path, cp_char)
         self._objects.append(cp_char)
         
-        # Supported Power Range (0x2AD6) - min, max, increment (sint16)
+        # Supported Power Range (0x2AD6)
         try:
             spr_path = f'{ftms_service_path}/char4'
-            spr_char = Characteristic(spr_path, SUPPORTED_POWER_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus)
-            # 10W to 800W, increment 1W
+            spr_char = Characteristic(spr_path, SUPPORTED_POWER_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus, backend=self)
             spr_char.value = list(struct.pack('<hhh', 10, 800, 1))
             self._bus.export(spr_path, spr_char)
             self._objects.append(spr_char)
@@ -298,7 +312,7 @@ class BLEFTMSBackend:
         # Supported Resistance Level Range (0x2AD4)
         try:
             srl_path = f'{ftms_service_path}/char5'
-            srl_char = Characteristic(srl_path, SUPPORTED_RESISTANCE_LEVEL_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus)
+            srl_char = Characteristic(srl_path, SUPPORTED_RESISTANCE_LEVEL_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus, backend=self)
             srl_char.value = list(struct.pack('<hhh', 0, 100, 1))
             self._bus.export(srl_path, srl_char)
             self._objects.append(srl_char)
@@ -311,16 +325,14 @@ class BLEFTMSBackend:
             hrs_service = Service(hrs_service_path, HEART_RATE_SERVICE_UUID, primary=True)
             self._bus.export(hrs_service_path, hrs_service)
             self._objects.append(hrs_service)
-            # Heart Rate Measurement (notify)
             hrm_path = f'{hrs_service_path}/char0'
-            hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus)
+            hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus, backend=self)
             self._heart_rate_char = hrm_char
             self._bus.export(hrm_path, hrm_char)
             self._objects.append(hrm_char)
-            # Body Sensor Location (read)
             bsl_path = f'{hrs_service_path}/char1'
-            bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus)
-            bsl_char.value = [0x01]  # Chest
+            bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus, backend=self)
+            bsl_char.value = [0x01]
             self._bus.export(bsl_path, bsl_char)
             self._objects.append(bsl_char)
         except Exception as e:
@@ -332,15 +344,13 @@ class BLEFTMSBackend:
             dis_service = Service(dis_service_path, DEVICE_INFORMATION_SERVICE_UUID, primary=True)
             self._bus.export(dis_service_path, dis_service)
             self._objects.append(dis_service)
-            # Manufacturer Name
             mn_path = f'{dis_service_path}/char0'
-            mn_char = Characteristic(mn_path, MANUFACTURER_NAME_UUID, ['read'], dis_service_path, bus=self._bus)
+            mn_char = Characteristic(mn_path, MANUFACTURER_NAME_UUID, ['read'], dis_service_path, bus=self._bus, backend=self)
             mn_char.value = list("Daum".encode('utf-8'))
             self._bus.export(mn_path, mn_char)
             self._objects.append(mn_char)
-            # Model Number
             mdl_path = f'{dis_service_path}/char1'
-            mdl_char = Characteristic(mdl_path, MODEL_NUMBER_UUID, ['read'], dis_service_path, bus=self._bus)
+            mdl_char = Characteristic(mdl_path, MODEL_NUMBER_UUID, ['read'], dis_service_path, bus=self._bus, backend=self)
             mdl_char.value = list("8008-TRS".encode('utf-8'))
             self._bus.export(mdl_path, mdl_char)
             self._objects.append(mdl_char)
@@ -398,6 +408,10 @@ class BLEFTMSBackend:
                 self._control_point_enabled = False
                 if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
                     self.bridge._erg_control_granted = False
+                if self.bridge and hasattr(self.bridge, '_app_connected'):
+                    self.bridge._app_connected = True
+                if self.bridge and hasattr(self.bridge, '_client_connected'):
+                    self.bridge._client_connected = True
                 if self.bridge and hasattr(self.bridge, 'set_target_watt'):
                     try:
                         self.bridge.set_target_watt(0)
@@ -411,6 +425,8 @@ class BLEFTMSBackend:
                 if not self._control_point_enabled:
                     self._send_cp_response(0x07, 0x02, 0x02)
                     return
+                if self.bridge and hasattr(self.bridge, '_app_connected'):
+                    self.bridge._app_connected = True
                 self._send_cp_response(0x07, 0x01, 0x00)
                 self._send_fitness_machine_status(0x01)
                 return
@@ -427,6 +443,10 @@ class BLEFTMSBackend:
                 if not self._control_point_enabled:
                     self._send_cp_response(0x05, 0x02, 0x02)
                     return
+                if self.bridge and hasattr(self.bridge, '_app_connected'):
+                    self.bridge._app_connected = True
+                if self.bridge and hasattr(self.bridge, '_client_connected'):
+                    self.bridge._client_connected = True
                 try:
                     power = struct.unpack('<h', data[1:3])[0]
                 except Exception:
@@ -449,6 +469,8 @@ class BLEFTMSBackend:
                 if not self._control_point_enabled:
                     self._send_cp_response(0x11, 0x02, 0x02)
                     return
+                if self.bridge and hasattr(self.bridge, '_app_connected'):
+                    self.bridge._app_connected = True
                 self._send_cp_response(0x11, 0x01, 0x00)
                 return
             # Set Resistance Level (0x04)
@@ -456,6 +478,8 @@ class BLEFTMSBackend:
                 if not self._control_point_enabled:
                     self._send_cp_response(0x04, 0x02, 0x02)
                     return
+                if self.bridge and hasattr(self.bridge, '_app_connected'):
+                    self.bridge._app_connected = True
                 self._send_cp_response(0x04, 0x01, 0x00)
                 return
             else:
@@ -469,12 +493,11 @@ class BLEFTMSBackend:
                 return
             resp = bytearray([0x80, request_op & 0xFF, result_code & 0xFF])
             if result_code != 0x01:
-                if result_code == 0x03 and error_code == 0x00:  # Invalid Parameter
+                if result_code == 0x03 and error_code == 0x00:
                     resp.append(error_code)
                 elif error_code != 0x00:
                     resp.append(error_code)
             self._control_point_char.value = list(resp)
-            # Try to indicate if possible
             try:
                 import asyncio
                 loop = asyncio.get_event_loop()
@@ -482,6 +505,10 @@ class BLEFTMSBackend:
                     asyncio.ensure_future(self._control_point_char.send_notification(bytes(resp)))
             except Exception:
                 pass
+            if self.bridge and hasattr(self.bridge, '_app_connected'):
+                self.bridge._app_connected = True
+            if self.bridge and hasattr(self.bridge, '_client_connected'):
+                self.bridge._client_connected = True
             log.debug(f"CP response: {bytes(resp).hex()}")
         except Exception as e:
             log.debug(f"CP response error: {e}")
