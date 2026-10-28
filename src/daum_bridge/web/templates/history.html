@@ -30,6 +30,10 @@
             <a href="/logs">Logs</a>
             <a href="/config">Config</a>
         </div>
+        <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0;">Recent Rides</h2>
+            <button onclick="syncStrava()" style="padding: 8px 16px; background: #fc4c02; color: white; border: none; border-radius: 6px; cursor: pointer;">Upload to Strava</button>
+        </div>
         <div class="card">
             <h2>Recent Rides</h2>
             <table id="ridesTable">
@@ -73,6 +77,19 @@
                     tbody.appendChild(tr);
                 }
             } catch(e) {}
+        }
+        async function syncStrava() {
+            try {
+                const res = await fetch('/api/strava/upload', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})});
+                const data = await res.json();
+                if (data.ok) {
+                    alert('Uploaded to Strava!');
+                } else {
+                    alert('Error: ' + (data.error || 'unknown'));
+                }
+            } catch(e) {
+                alert('Error: ' + e);
+            }
         }
         load();
     </script>
