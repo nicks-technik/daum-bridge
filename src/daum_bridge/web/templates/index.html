@@ -122,6 +122,18 @@
         </div>
         
         <div class="section">
+            <h2>📈 Real-time Graphs</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div style="background: #0f172a; padding: 15px; border-radius: 8px;">
+                    <canvas id="powerChart"></canvas>
+                </div>
+                <div style="background: #0f172a; padding: 15px; border-radius: 8px;">
+                    <canvas id="cadenceChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="section">
             <h2>📊 Additional Info</h2>
             <div class="info-grid">
                 <div class="info-item">
@@ -136,7 +148,57 @@
         </div>
     </div>
     
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script>
+        let powerChart, cadenceChart;
+        const powerData = [];
+        const cadenceData = [];
+        const timeLabels = [];
+        let chartInitialized = false;
+        
+        function initCharts() {
+            if (chartInitialized) return;
+            const ctx1 = document.getElementById('powerChart').getContext('2d');
+            const ctx2 = document.getElementById('cadenceChart').getContext('2d');
+            powerChart = new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels: timeLabels,
+                    datasets: [{
+                        label: 'Power (W)',
+                        data: powerData,
+                        borderColor: '#3b82f6',
+                        tension: 0.4,
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: { y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }, x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } } },
+                    plugins: { legend: { labels: { color: '#e2e8f0' } } }
+                }
+            });
+            cadenceChart = new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels: timeLabels,
+                    datasets: [{
+                        label: 'Cadence (rpm)',
+                        data: cadenceData,
+                        borderColor: '#22c55e',
+                        tension: 0.4,
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: { y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }, x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } } },
+                    plugins: { legend: { labels: { color: '#e2e8f0' } } }
+                }
+            });
+            chartInitialized = true;
+        }
+        
         async function updateState() {
             try {
                 const res = await fetch('/api/state');
@@ -173,6 +235,21 @@
                 
                 if (data.elapsed_time) {
                     document.getElementById('time').textContent = data.elapsed_time + 's';
+                }
+                
+                // Update charts
+                if (chartInitialized) {
+                    const now = new Date().toLocaleTimeString();
+                    if (timeLabels.length > 30) {
+                        timeLabels.shift();
+                        powerData.shift();
+                        cadenceData.shift();
+                    }
+                    timeLabels.push(now);
+                    powerData.push(Math.round(data.power || 0));
+                    cadenceData.push(Math.round(data.cadence || 0));
+                    powerChart.update();
+                    cadenceChart.update();
                 }
             } catch (e) {
                 console.error(e);
@@ -219,6 +296,7 @@
         setInterval(updateDiag, 2000);
         updateState();
         updateDiag();
+        setTimeout(initCharts, 500);
     </script>
 </body>
 </html>

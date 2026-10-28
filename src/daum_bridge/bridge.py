@@ -47,8 +47,12 @@ class DaumBridge:
         if not port:
             raise RuntimeError("No serial port found")
         log.info("Opening serial port %s", port)
-        self.serial_port = open_serial(port, cfg.baudrate, cfg.timeout, cfg.bytesize, cfg.parity, cfg.stopbits)
-        self.protocol = DaumProtocol(self.serial_port, log_raw=self.config.logging.log_raw_frames)
+        try:
+            self.serial_port = open_serial(port, cfg.baudrate, cfg.timeout, cfg.bytesize, cfg.parity, cfg.stopbits)
+            self.protocol = DaumProtocol(self.serial_port, log_raw=getattr(self.config.logging, 'log_raw_frames', False))
+        except Exception as e:
+            log.error(f"Failed to open serial port {port}: {e}")
+            raise
         return self
 
     def start(self):
@@ -160,7 +164,7 @@ class DaumBridge:
                             except Exception as e:
                                 log.debug(f"Re-apply watt error: {e}")
                 # Health check & auto-reconnect
-                if self._consecutive_errors > 20 and time.time() - self._last_reconnect > 5.0:
+                if self._consecutive_errors > 15 and time.time() - self._last_reconnect > 3.0:
                     log.warning("Too many serial errors, attempting reconnect...")
                     try:
                         if self.serial_port and hasattr(self.serial_port, 'close'):
@@ -168,13 +172,23 @@ class DaumBridge:
                                 self.serial_port.close()
                             except Exception:
                                 pass
-                        self.protocol = None
+                    except Exception:
+                        pass
+                    self.protocol = None
+                    self.serial_port = None
+                    try:
                         self.connect()
-                        self.protocol.request_address()
+                        if self.protocol:
+                            try:
+                                self.protocol.request_address()
+                            except Exception:
+                                pass
                         self._consecutive_errors = 0
                         self._last_reconnect = time.time()
+                        log.info("Reconnected successfully")
                     except Exception as e:
                         log.error(f"Reconnect failed: {e}")
+                        self._last_reconnect = time.time()
                 time.sleep(0.01)
             except Exception as e:
                 log.error("Bridge loop error: %s", e)
@@ -182,10 +196,11 @@ class DaumBridge:
                 time.sleep(getattr(self.config.bridge, 'reconnect_delay', 2.0))
 
     def set_target_watt(self, watts: int):
-        self._target_watt = max(0, int(watts))
+        self._target_watt = max(0, min(800, int(watts)))
         if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_watt(self._target_watt)
+                self._last_target_set = time.time()
             except Exception as e:
                 log.debug("set_watt error: %s", e)
 
@@ -207,7 +222,7 @@ class DaumBridge:
 
     def set_gear(self, gear: int):
         self._target_gear = max(1, int(gear))
-        if self.protocol and self.protocol._address_found:
+        if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_gear(self._target_gear)
             except Exception as e:

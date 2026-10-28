@@ -27,6 +27,8 @@ INDOOR_BIKE_DATA_UUID = '00002ad2-0000-1000-8000-00805f9b34fb'
 FITNESS_MACHINE_FEATURE_UUID = '00002ad8-0000-1000-8000-00805f9b34fb'
 FITNESS_MACHINE_CONTROL_POINT_UUID = '00002ad9-0000-1000-8000-00805f9b34fb'
 FITNESS_MACHINE_STATUS_UUID = '00002ad3-0000-1000-8000-00805f9b34fb'
+SUPPORTED_POWER_RANGE_UUID = '00002ad6-0000-1000-8000-00805f9b34fb'
+SUPPORTED_RESISTANCE_LEVEL_RANGE_UUID = '00002ad4-0000-1000-8000-00805f9b34fb'
 DEVICE_INFORMATION_SERVICE_UUID = '0000180a-0000-1000-8000-00805f9b34fb'
 MANUFACTURER_NAME_UUID = '00002a29-0000-1000-8000-00805f9b34fb'
 MODEL_NUMBER_UUID = '00002a24-0000-1000-8000-00805f9b34fb'
@@ -253,8 +255,8 @@ class BLEFTMSBackend:
         target_setting_features = 0x00000000
         # Cadence (bit 1) + Power (bit 14) + Heart Rate Measurement (bit 10)
         fitness_machine_features |= (1 << 1) | (1 << 10) | (1 << 14)
-        # Target Power supported (bit 1)
-        target_setting_features |= (1 << 1)
+        # Target Power supported (bit 1) + Resistance Level (bit 2)
+        target_setting_features |= (1 << 1) | (1 << 2)
         features = struct.pack('<II', fitness_machine_features, target_setting_features)
         feature_char.value = list(features)
         self._bus.export(feature_path, feature_char)
@@ -281,6 +283,27 @@ class BLEFTMSBackend:
         self._control_point_char = cp_char
         self._bus.export(cp_path, cp_char)
         self._objects.append(cp_char)
+        
+        # Supported Power Range (0x2AD6) - min, max, increment (sint16)
+        try:
+            spr_path = f'{ftms_service_path}/char4'
+            spr_char = Characteristic(spr_path, SUPPORTED_POWER_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus)
+            # 10W to 800W, increment 1W
+            spr_char.value = list(struct.pack('<hhh', 10, 800, 1))
+            self._bus.export(spr_path, spr_char)
+            self._objects.append(spr_char)
+        except Exception as e:
+            log.debug(f"SPR setup error: {e}")
+        
+        # Supported Resistance Level Range (0x2AD4)
+        try:
+            srl_path = f'{ftms_service_path}/char5'
+            srl_char = Characteristic(srl_path, SUPPORTED_RESISTANCE_LEVEL_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus)
+            srl_char.value = list(struct.pack('<hhh', 0, 100, 1))
+            self._bus.export(srl_path, srl_char)
+            self._objects.append(srl_char)
+        except Exception as e:
+            log.debug(f"SRL setup error: {e}")
         
         # Heart Rate Service
         try:
@@ -360,30 +383,35 @@ class BLEFTMSBackend:
             op_code = data[0]
             self._last_cp_req = op_code
             log.info(f"Control Point op: 0x{op_code:02X} data={data.hex()}")
+            if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
+                pass
             # Request Control (0x00)
             if op_code == 0x00:
                 self._control_point_enabled = True
+                if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
+                    self.bridge._erg_control_granted = True
                 self._send_cp_response(0x00, 0x01, 0x00)
-                self._send_fitness_machine_status(0x01)  # Started
+                self._send_fitness_machine_status(0x01)
                 return
             # Reset (0x01)
             elif op_code == 0x01:
                 self._control_point_enabled = False
+                if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
+                    self.bridge._erg_control_granted = False
                 if self.bridge and hasattr(self.bridge, 'set_target_watt'):
                     try:
                         self.bridge.set_target_watt(0)
                     except Exception:
                         pass
                 self._send_cp_response(0x01, 0x01, 0x00)
-                self._send_fitness_machine_status(0x02)  # Stopped
+                self._send_fitness_machine_status(0x02)
                 return
             # Start or Resume (0x07)
             elif op_code == 0x07:
                 if not self._control_point_enabled:
-                    self._send_cp_response(0x07, 0x02, 0x02)  # Not permitted
+                    self._send_cp_response(0x07, 0x02, 0x02)
                     return
                 self._send_cp_response(0x07, 0x01, 0x00)
-                self._send_fitness_machine_status(0x03)  # Paused/Resumed context - use general
                 self._send_fitness_machine_status(0x01)
                 return
             # Stop or Pause (0x08)
@@ -394,26 +422,29 @@ class BLEFTMSBackend:
                 self._send_cp_response(0x08, 0x01, 0x00)
                 self._send_fitness_machine_status(0x04)
                 return
-            # Set Target Power (0x05) - format: op(1) + power(2 little endian, signed)
+            # Set Target Power (0x05)
             elif op_code == 0x05 and len(data) >= 3:
                 if not self._control_point_enabled:
-                    self._send_cp_response(0x05, 0x02, 0x02)  # Not permitted
+                    self._send_cp_response(0x05, 0x02, 0x02)
                     return
                 try:
                     power = struct.unpack('<h', data[1:3])[0]
                 except Exception:
-                    self._send_cp_response(0x05, 0x03, 0x01)  # Invalid Parameter
+                    self._send_cp_response(0x05, 0x03, 0x01)
                     return
-                log.info(f"FTMS set target power: {power}W")
+                power_clamped = max(0, min(800, int(power)))
+                log.info(f"FTMS set target power: {power}W (clamped to {power_clamped}W)")
                 if self.bridge and hasattr(self.bridge, 'set_target_watt'):
                     try:
-                        self.bridge.set_target_watt(int(power))
+                        self.bridge.set_target_watt(power_clamped)
+                        if hasattr(self.bridge, '_erg_control_granted'):
+                            self.bridge._erg_control_granted = True
                     except Exception as e:
                         log.debug(f"Error setting power: {e}")
                 self._send_cp_response(0x05, 0x01, 0x00)
-                self._send_fitness_machine_status(0x07)  # Target Power Changed (0x07)
+                self._send_fitness_machine_status(0x07)
                 return
-            # Set Indoor Bike Simulation Parameters (0x11) - ignore but respond
+            # Set Indoor Bike Simulation Parameters (0x11)
             elif op_code == 0x11 and len(data) >= 7:
                 if not self._control_point_enabled:
                     self._send_cp_response(0x11, 0x02, 0x02)
@@ -428,7 +459,6 @@ class BLEFTMSBackend:
                 self._send_cp_response(0x04, 0x01, 0x00)
                 return
             else:
-                # Not supported
                 self._send_cp_response(op_code, 0x02, 0x07)
         except Exception as e:
             log.error(f"Control point error: {e}")
@@ -572,6 +602,11 @@ class BLEFTMSBackend:
 
     async def stop(self):
         self._running = False
+        await self._cleanup()
         if self._notify_task:
             self._notify_task.cancel()
+            try:
+                await self._notify_task
+            except Exception:
+                pass
         log.info("Stopping BLE FTMS backend")

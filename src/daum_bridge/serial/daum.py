@@ -96,6 +96,7 @@ class DaumProtocol:
             log.debug("Cannot set watt - no address")
             return
         watts = max(0, int(watts))
+        watts = min(800, watts)
         self._write(self.build_command(DaumCmd.SET_WATT, self._address, watts))
 
     def set_gear(self, gear: int):

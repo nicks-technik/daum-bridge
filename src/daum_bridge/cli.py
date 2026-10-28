@@ -20,10 +20,17 @@ app = typer.Typer(name="daum-bridge", help="Bridge Daum 8008 TRS to MyWhoosh via
 console = Console()
 
 
-def setup_logging(level: str = "INFO"):
+def setup_logging(level: str = "INFO", log_file: str = None):
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        try:
+            handlers.append(logging.FileHandler(log_file))
+        except Exception:
+            pass
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=handlers,
     )
 
 
@@ -55,6 +62,7 @@ def run(
     port: Optional[str] = typer.Option(None, "--port", "-p", help="Serial port (overrides config)"),
     no_web: bool = typer.Option(False, "--no-web", help="Disable web UI"),
     no_ble: bool = typer.Option(False, "--no-ble", help="Disable BLE FTMS backend"),
+    log_file: Optional[str] = typer.Option(None, "--log-file", help="Log to file"),
 ):
     """Run the bridge."""
     cfg = Config.load(config)
@@ -66,9 +74,12 @@ def run(
     if no_ble:
         cfg.ble.enabled = False
     
-    setup_logging(cfg.logging.level)
+    setup_logging(getattr(cfg.logging, 'level', 'INFO'), log_file)
     log = logging.getLogger("daum_bridge")
     log.info("Starting daum-bridge %s", __version__)
+    errs = cfg.validate()
+    for e in errs:
+        log.warning("Config: %s", e)
     
     bridge = DaumBridge(cfg)
     try:
