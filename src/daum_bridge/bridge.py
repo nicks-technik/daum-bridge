@@ -126,19 +126,31 @@ class DaumBridge:
     def set_target_watt(self, watts: int):
         self._target_watt = max(0, int(watts))
         if self.protocol and self.protocol._address_found:
-            self.protocol.set_watt(self._target_watt)
+            try:
+                self.protocol.set_watt(self._target_watt)
+            except Exception as e:
+                log.debug("set_watt error: %s", e)
 
     def shift_up(self):
         self._target_gear = max(1, self._target_gear + 1)
         if self.protocol and self.protocol._address_found:
-            self.protocol.set_gear(self._target_gear)
+            try:
+                self.protocol.set_gear(self._target_gear)
+            except Exception as e:
+                log.debug("set_gear error: %s", e)
 
     def shift_down(self):
         self._target_gear = max(1, self._target_gear - 1)
         if self.protocol and self.protocol._address_found:
-            self.protocol.set_gear(self._target_gear)
+            try:
+                self.protocol.set_gear(self._target_gear)
+            except Exception as e:
+                log.debug("set_gear error: %s", e)
 
     def set_gear(self, gear: int):
         self._target_gear = max(1, int(gear))
         if self.protocol and self.protocol._address_found:
-            self.protocol.set_gear(self._target_gear)
+            try:
+                self.protocol.set_gear(self._target_gear)
+            except Exception as e:
+                log.debug("set_gear error: %s", e)
