@@ -1,0 +1,31 @@
+# daum-bridge configuration
+# Copy to config.yaml and adjust for your setup
+
+serial:
+  # Leave empty for auto-detect
+  port: ""
+  baudrate: 9600
+  timeout: 1.0
+  # Bytesize/parity/stopbits - Daum 8008 TRS typically uses RS232 defaults; try 9600 8N1
+  bytesize: 8
+  parity: "N"
+  stopbits: 1
+
+bridge:
+  poll_interval: 0.5  # seconds for run_Data polling
+  reconnect_delay: 2.0
+
+ble:
+  enabled: true
+  adapter: "hci0"  # BlueZ adapter
+  device_name: "DAUM-8008-TRS"
+  # FTMS service/characteristics handled internally
+
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
+logging:
+  level: "INFO"
+  log_raw_frames: false

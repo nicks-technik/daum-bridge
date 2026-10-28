@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>daum-bridge</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-top: 0; }
+        .status { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0; }
+        .card { background: #f9f9f9; padding: 15px; border-radius: 4px; text-align: center; }
+        .card .label { color: #666; font-size: 0.9em; }
+        .card .value { font-size: 1.8em; font-weight: bold; color: #333; }
+        .controls { margin: 30px 0; }
+        .gear-controls { display: flex; gap: 10px; align-items: center; justify-content: center; margin: 20px 0; }
+        button { padding: 10px 20px; font-size: 1em; cursor: pointer; border: none; border-radius: 4px; background: #007bff; color: white; }
+        button:hover { background: #0056b3; }
+        button:active { background: #004494; }
+        .gear-display { font-size: 2em; font-weight: bold; min-width: 60px; text-align: center; }
+        .connected { color: #28a745; }
+        .disconnected { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>daum-bridge</h1>
+        <p>Status: <span id="status" class="disconnected">Disconnected</span></p>
+        
+        <div class="status">
+            <div class="card">
+                <div class="label">Power</div>
+                <div class="value" id="power">0</div>
+                <div>W</div>
+            </div>
+            <div class="card">
+                <div class="label">Cadence</div>
+                <div class="value" id="cadence">0</div>
+                <div>rpm</div>
+            </div>
+            <div class="card">
+                <div class="label">Speed</div>
+                <div class="value" id="speed">0</div>
+                <div>km/h</div>
+            </div>
+            <div class="card">
+                <div class="label">Heart Rate</div>
+                <div class="value" id="hr">0</div>
+                <div>bpm</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <h2>Gear Shifting</h2>
+            <div class="gear-controls">
+                <button onclick="shiftDown()">▼ Shift Down</button>
+                <div class="gear-display">Gear <span id="gear">1</span></div>
+                <button onclick="shiftUp()">▲ Shift Up</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function updateState() {
+            try {
+                const res = await fetch('/api/state');
+                const data = await res.json();
+                document.getElementById('power').textContent = Math.round(data.power || 0);
+                document.getElementById('cadence').textContent = Math.round(data.cadence || 0);
+                document.getElementById('speed').textContent = (data.speed || 0).toFixed(1);
+                document.getElementById('hr').textContent = data.heart_rate || 0;
+                document.getElementById('gear').textContent = data.gear || 1;
+                const status = document.getElementById('status');
+                if (data.connected) {
+                    status.textContent = 'Connected to Daum 8008 TRS';
+                    status.className = 'connected';
+                } else {
+                    status.textContent = 'Disconnected';
+                    status.className = 'disconnected';
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+        
+        async function shiftUp() {
+            await fetch('/api/shift/up', { method: 'POST' });
+            updateState();
+        }
+        
+        async function shiftDown() {
+            await fetch('/api/shift/down', { method: 'POST' });
+            updateState();
+        }
+        
+        setInterval(updateState, 1000);
+        updateState();
+    </script>
+</body>
+</html>
