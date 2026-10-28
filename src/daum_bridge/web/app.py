@@ -26,15 +26,20 @@ def create_app(bridge) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        state = bridge.state if bridge else None
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "state": state,
-        })
+        try:
+            state = bridge.state if bridge else None
+            return templates.TemplateResponse(request, "index.html", {
+                "state": state,
+            })
+        except Exception:
+            return HTMLResponse("<html><body>daum-bridge</body></html>")
 
     @app.get("/config", response_class=HTMLResponse)
     async def config_page(request: Request):
-        return templates.TemplateResponse("config.html", {"request": request})
+        try:
+            return templates.TemplateResponse(request, "config.html", {})
+        except Exception:
+            return HTMLResponse("<html><body>config</body></html>")
 
     @app.get("/api/config")
     async def get_config():
