@@ -1,3 +1,3 @@
 """daum-bridge: Bridge Daum 8008 TRS RS232 ergometer to MyWhoosh via BLE FTMS."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
