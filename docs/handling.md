@@ -1,5 +1,7 @@
 # Handling & Setup Guide
 
+See also: [installation.md](installation.md), [overview.md](overview.md), [protocol.md](protocol.md), [wsl-prep.md](wsl-prep.md)
+
 ## Hardware Setup
 1. Connect original Daum RS232 cable to 8008 TRS cockpit
 2. Connect RS232→USB adapter to cable

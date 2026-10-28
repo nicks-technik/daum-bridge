@@ -16,9 +16,6 @@ chmod +x scripts/setup-linux.sh
 newgrp dialout
 newgrp bluetooth
 
-# Check setup
-./scripts/check-setup.sh
-
 # Configure
 cp config.example.yaml config.yaml
 # Edit config.yaml as needed (serial port, ble adapter)
@@ -29,6 +26,8 @@ uv run daum-bridge scan
 # Run
 uv run daum-bridge run
 ```
+
+See also: [installation.md](installation.md), [handling.md](handling.md), [protocol.md](protocol.md), [overview.md](overview.md).
 
 ## Notes for WSL2
 - WSL2 doesn't have direct USB/Bluetooth passthrough by default. For serial (RS232->USB), use `usbipd-win` to attach the USB adapter to WSL2.

@@ -35,6 +35,9 @@ MODEL_NUMBER_UUID = '00002a24-0000-1000-8000-00805f9b34fb'
 HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
 HEART_RATE_MEASUREMENT_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
 BODY_SENSOR_LOCATION_UUID = '00002a38-0000-1000-8000-00805f9b34fb'
+CYCLING_POWER_SERVICE_UUID = '00001818-0000-1000-8000-00805f9b34fb'
+CYCLING_POWER_MEASUREMENT_UUID = '00002a63-0000-1000-8000-00805f9b34fb'
+CYCLING_POWER_FEATURE_UUID = '00002a65-0000-1000-8000-00805f9b34fb'
 GATT_CHARACTERISTIC_USER_DESC_UUID = '00002901-0000-1000-8000-00805f9b34fb'
 GATT_CLIENT_CHAR_CFG_UUID = '00002902-0000-1000-8000-00805f9b34fb'
 
@@ -201,8 +204,10 @@ class BLEFTMSBackend:
         self._fitness_machine_status_char = None
         self._last_cp_req = None
         self._heart_rate_char = None
+        self._cycling_power_char = None
         self._clients_connected = 0
         self.virtual_shifting_enabled = True
+        self._adapter_watch_task = None
 
     async def start(self):
         log.info("Starting BLE FTMS backend on %s as %s", self._adapter, self._device_name)
@@ -245,6 +250,7 @@ class BLEFTMSBackend:
 
         try:
             self._notify_task = asyncio.create_task(self._notify_loop())
+            self._adapter_watch_task = asyncio.create_task(self._watch_adapter())
             while self._running:
                 await asyncio.sleep(1)
         except Exception as e:
@@ -257,11 +263,31 @@ class BLEFTMSBackend:
                     await self._notify_task
                 except Exception:
                     pass
+            if self._adapter_watch_task:
+                self._adapter_watch_task.cancel()
+                try:
+                    await self._adapter_watch_task
+                except Exception:
+                    pass
             if self._bus:
                 try:
                     self._bus.disconnect()
                 except Exception:
                     pass
+
+    async def _watch_adapter(self):
+        while self._running:
+            try:
+                await asyncio.sleep(15)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+            # Basic adapter watch - could be enhanced with D-Bus
+            try:
+                pass
+            except Exception:
+                pass
 
     async def _setup_gatt(self):
         # Create application
@@ -425,9 +451,28 @@ class BLEFTMSBackend:
         except Exception as e:
             log.debug(f"HRS setup error: {e}")
         
+        # Cycling Power Service
+        try:
+            cps_service_path = f'{self._app_path}/service2'
+            cps_service = Service(cps_service_path, CYCLING_POWER_SERVICE_UUID, primary=True)
+            self._bus.export(cps_service_path, cps_service)
+            self._objects.append(cps_service)
+            cpf_path = f'{cps_service_path}/char0'
+            cpf_char = Characteristic(cpf_path, CYCLING_POWER_FEATURE_UUID, ['read'], cps_service_path, bus=self._bus, backend=self)
+            cpf_char.value = list(struct.pack('<I', 0x00000008))  # crank revolution data not required
+            self._bus.export(cpf_path, cpf_char)
+            self._objects.append(cpf_char)
+            cpm_path = f'{cps_service_path}/char1'
+            cpm_char = Characteristic(cpm_path, CYCLING_POWER_MEASUREMENT_UUID, ['notify'], cps_service_path, bus=self._bus, backend=self)
+            self._cycling_power_char = cpm_char
+            self._bus.export(cpm_path, cpm_char)
+            self._objects.append(cpm_char)
+        except Exception as e:
+            log.debug(f"CPS setup error: {e}")
+        
         # Device Information Service
         try:
-            dis_service_path = f'{self._app_path}/service2'
+            dis_service_path = f'{self._app_path}/service3'
             dis_service = Service(dis_service_path, DEVICE_INFORMATION_SERVICE_UUID, primary=True)
             self._bus.export(dis_service_path, dis_service)
             self._objects.append(dis_service)
@@ -462,9 +507,8 @@ class BLEFTMSBackend:
             introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
             proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
             adv_manager = proxy_obj.get_interface('org.bluez.LEAdvertisingManager1')
-            # Advertise FTMS and HR services
             try:
-                self._advertisement.ServiceUUIDs = [FTMS_UUID, HEART_RATE_SERVICE_UUID]
+                self._advertisement.ServiceUUIDs = [FTMS_UUID, HEART_RATE_SERVICE_UUID, CYCLING_POWER_SERVICE_UUID]
             except Exception:
                 pass
             await adv_manager.call_register_advertisement(self._adv_path, {})
@@ -670,10 +714,23 @@ class BLEFTMSBackend:
                             hr = int(state.heart_rate)
                             if 40 <= hr <= 220:
                                 hr_packet = bytearray([0x00, hr & 0xFF])
-                                if self._heart_rate_char.notifying:
+                                if self._heart_rate_char.notifying or getattr(self._heart_rate_char, 'indicating', False):
                                     await self._heart_rate_char.send_notification(bytes(hr_packet))
                                 else:
                                     self._heart_rate_char.value = list(hr_packet)
+                        except Exception:
+                            pass
+                    # Cycling Power
+                    if self._cycling_power_char:
+                        try:
+                            pwr = int(getattr(state, 'power', 0) or 0)
+                            flags = 0x0000
+                            cp_packet = bytearray([flags & 0xFF, (flags >> 8) & 0xFF])
+                            cp_packet += struct.pack('<h', pwr & 0xFFFF)
+                            if self._cycling_power_char.notifying or getattr(self._cycling_power_char, 'indicating', False):
+                                await self._cycling_power_char.send_notification(bytes(cp_packet))
+                            else:
+                                self._cycling_power_char.value = list(cp_packet)
                         except Exception:
                             pass
                     log.debug("FTMS IBP: speed=%s cadence=%s dist=%s power=%s hr=%s", getattr(state, 'speed', None), getattr(state, 'cadence', None), getattr(state, 'total_distance', None), getattr(state, 'power', None), getattr(state, 'heart_rate', None))

@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1e40af">
+    <link rel="manifest" href="/static/manifest.json">
     <title>daum-bridge - Dashboard</title>
     <style>
         * { box-sizing: border-box; }
@@ -45,8 +47,10 @@
     </div>
     
     <div class="container">
-        <div style="margin-bottom: 15px;">
+        <div style="margin-bottom: 15px; display: flex; gap: 15px; align-items: center;">
             <a href="/config" style="color: #3b82f6; text-decoration: none;">⚙️ Config</a>
+            <button onclick="reconnectSerial()" style="padding: 6px 12px; background: #334155; color: white; border: none; border-radius: 6px; cursor: pointer;">Reconnect Serial</button>
+            <span id="uptime" style="color: #94a3b8; font-size: 13px;"></span>
         </div>
         <div class="status-bar">
             <div class="status-item">
@@ -323,6 +327,24 @@
         updateState();
         updateDiag();
         setTimeout(initCharts, 500);
+        async function reconnectSerial() {
+            try {
+                const res = await fetch('/api/reconnect/serial', {method: 'POST'});
+                const data = await res.json();
+                if (data.ok) {
+                    alert('Reconnect initiated');
+                } else {
+                    alert('Reconnect failed: ' + (data.error || 'unknown'));
+                }
+            } catch(e) {
+                alert('Error: ' + e);
+            }
+        }
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/sw.js').catch(()=>{});
+        }
     </script>
 </body>
 </html>

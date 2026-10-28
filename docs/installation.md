@@ -1,5 +1,7 @@
 # Installation (via GitHub)
 
+See also: [overview.md](overview.md), [handling.md](handling.md), [protocol.md](protocol.md), [wsl-prep.md](wsl-prep.md)
+
 This guide covers installing the Daum Bridge from GitHub and its prerequisites.
 
 ## Prerequisites
@@ -48,33 +50,41 @@ python --version
 ```
 
 ### On Linux (for the bridge - recommended)
-Install required packages. Commands vary by distro.
+Use the automated setup script, or install manually.
 
-#### Debian/Ubuntu/Raspberry Pi OS
+#### Automated (recommended)
+```bash
+git clone https://github.com/<your-username>/daum-bridge.git
+cd daum-bridge
+chmod +x scripts/setup-linux.sh
+./scripts/setup-linux.sh
+```
+The script installs dependencies, adds you to `dialout`/`bluetooth` groups, sets up config, installs Python deps with uv, runs checks, and prints a summary of any problems.
+
+#### Manual by distro
+##### Debian/Ubuntu/Raspberry Pi OS
 ```bash
 sudo apt update
-sudo apt install -y git python3 python3-pip bluez bluetooth pi-bluetooth
-# Install uv
+sudo apt install -y git python3 python3-pip python3-venv build-essential pkg-config libffi-dev libssl-dev bluez bluetooth libbluetooth-dev dbus libdbus-1-dev libglib2.0-dev usbutils python3-dbus python3-gi
 curl -LsSf https://astral.sh/uv/install.sh | sh
-# Reload shell
-source $HOME/.cargo/env 2>/dev/null || source $HOME/.local/bin/env 2>/dev/null
+source $HOME/.local/bin/env 2>/dev/null || source $HOME/.cargo/env 2>/dev/null
 ```
 
-#### Fedora
+##### Fedora
 ```bash
-sudo dnf install -y git python3 bluez bluez-tools
+sudo dnf install -y git python3 bluez bluez-tools bluez-libs-devel dbus-devel glib2-devel libffi-devel openssl-devel gcc pkg-config
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env 2>/dev/null || source $HOME/.local/bin/env 2>/dev/null
+source $HOME/.local/bin/env 2>/dev/null || source $HOME/.cargo/env 2>/dev/null
 ```
 
-#### Arch Linux
+##### Arch Linux
 ```bash
-sudo pacman -S --noconfirm git python bluez bluez-utils
+sudo pacman -S --noconfirm git python bluez bluez-utils base-devel pkg-config libffi openssl dbus glib2
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env 2>/dev/null || source $HOME/.local/bin/env 2>/dev/null
+source $HOME/.local/bin/env 2>/dev/null || source $HOME/.cargo/env 2>/dev/null
 ```
 
-Verify BlueZ is installed and running:
+Verify BlueZ:
 ```bash
 bluetoothd -v
 systemctl status bluetooth
@@ -85,7 +95,7 @@ hciconfig  # or bluetoothctl show
 ```bash
 sudo usermod -a -G dialout $USER
 sudo usermod -a -G bluetooth $USER
-# Logout/login required
+# Logout/login required (or use newgrp)
 ```
 
 ## Install from GitHub
@@ -95,8 +105,6 @@ sudo usermod -a -G bluetooth $USER
 git clone https://github.com/<your-username>/daum-bridge.git
 cd daum-bridge
 ```
-
-Or download a release/archive from the GitHub repository page.
 
 ### Install dependencies
 ```bash
@@ -131,10 +139,63 @@ uv run daum-bridge run --config config.yaml
 uv run daum-bridge run
 ```
 
+## WSL2 Notes
+See [wsl-prep.md](wsl-prep.md) for USB/Bluetooth passthrough notes (usbipd-win) and limitations of WSL2 for BLE peripheral mode.
+
+## Bluetooth/BlueZ Setup (FTMS Peripheral)
+
+For MyWhoosh to connect properly, BlueZ needs to be configured as a peripheral.
+
+### Quick checks
+```bash
+hciconfig
+sudo bluetoothctl show
+```
+
+### Make adapter discoverable/power on
+```bash
+sudo bluetoothctl
+power on
+agent NoInputNoOutput
+default-agent
+discoverable on
+pairable on
+quit
+```
+
+### Experimental features (if needed)
+Some BlueZ versions need experimental features for GATT server/advertising. Edit `/etc/systemd/system/bluetooth.target.wants/bluetooth.service` or override:
+```bash
+sudo systemctl edit bluetooth
+```
+Add:
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/lib/bluetooth/bluetoothd -E
+```
+Then restart:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart bluetooth
+```
+
+### Permissions
+The user running the bridge must be in `bluetooth` group (done by setup script). Also needs D-Bus access to system bus.
+
+### Tips
+- Run as the user in bluetooth group (not root)
+- On some distros, BlueZ 5.50+ works fine with dbus-next
+- If MyWhoosh still doesn't see it, try disabling LE privacy/random address temporarily
+```bash
+sudo hciconfig hci0 down
+sudo hciconfig hci0 up
+```
+
 ## Web UI
 Open `http://<bridge-ip>:8080` for status and gear shifting.
 
 ## Notes
-- BLE FTMS peripheral requires BlueZ on Linux. See `docs/handling.md` for details.
+- BLE FTMS peripheral requires BlueZ on Linux. See [handling.md](handling.md) for details.
 - MyWhoosh pairs as a BLE FTMS trainer device.
-- For more details, see `docs/handling.md`, `docs/overview.md`, and `docs/protocol.md`.
+- For protocol details, see [protocol.md](protocol.md).

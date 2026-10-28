@@ -41,6 +41,53 @@ def version():
 
 
 @app.command()
+def calibrate(
+    port: Optional[str] = typer.Option(None, "--port", "-p", help="Serial port"),
+    seconds: int = typer.Option(10, "--seconds", "-s", help="Capture duration"),
+):
+    """Calibrate serial protocol offsets by capturing raw frames."""
+    from .serial.port import auto_detect_daum_port, open_serial, list_serial_ports
+    from .config import Config, get_env_overrides
+    import time
+    
+    cfg = Config.load()
+    cfg = get_env_overrides(cfg)
+    if port:
+        cfg.serial.port = port
+    p = cfg.serial.port or auto_detect_daum_port()
+    if not p:
+        console.print("[red]No serial port found[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Capturing on {p} for {seconds}s...[/green]")
+    try:
+        ser = open_serial(p, cfg.serial.baudrate, cfg.serial.timeout, cfg.serial.bytesize, cfg.serial.parity, cfg.serial.stopbits)
+        proto = DaumProtocol(ser, log_raw=True)
+        proto.request_address()
+        time.sleep(1)
+        frames = []
+        start = time.time()
+        while time.time() - start < seconds:
+            data = ser.read(ser.in_waiting) if hasattr(ser, 'in_waiting') and ser.in_waiting else b''
+            if data:
+                frames.append(data.hex())
+                proto.parse(data)
+            time.sleep(0.01)
+        console.print(f"[green]Captured {len(frames)} frame chunks[/green]")
+        if proto._raw_log:
+            console.print(f"Total raw chunks: {len(proto._raw_log)}")
+        console.print("Suggested offsets (from daumUSB.js compatible):")
+        console.print("  power: offset +5 (raw * 5)")
+        console.print("  cadence/rpm: offset +6")
+        console.print("  gear: offset +16")
+        console.print("  hr: scan offsets 4-10 in person data (0xA2)")
+        console.print("\nSet logging.log_raw_frames: true and save frames for tuning.")
+        ser.close()
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def scan():
     """Scan for serial ports."""
     ports = list_serial_ports()

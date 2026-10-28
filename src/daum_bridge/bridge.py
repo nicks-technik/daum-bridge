@@ -33,6 +33,11 @@ class DaumBridge:
         self._client_connected = False
         self._app_connected = False
         self._virtual_shifting_enabled = True
+        self._start_time = time.time()
+        self._serial_connected_time = None
+        self._app_connected_time = None
+        self._erg_retry_count = 0
+        self._last_erg_attempt = 0.0
 
     def add_state_callback(self, cb: Callable[[DaumState], None]):
         self._callbacks.append(cb)
@@ -151,6 +156,8 @@ class DaumBridge:
                             log.debug(f"Address request error: {e}")
                             self._consecutive_errors += 1
                 else:
+                    if self._serial_connected_time is None:
+                        self._serial_connected_time = time.time()
                     # Poll run data
                     if time.time() - last_run_data > getattr(self.config.bridge, 'poll_interval', 0.5):
                         try:
@@ -161,11 +168,19 @@ class DaumBridge:
                         except Exception as e:
                             log.debug(f"Run data request error: {e}")
                             self._consecutive_errors += 1
-                    # Re-apply target watt aggressively for ERG
+                    # Re-apply target watt aggressively for ERG with auto-engage fallback
                     if self._target_watt >= 0:
-                        interval = 0.5 if self._erg_control_granted else 1.0
+                        interval = 0.4 if self._erg_control_granted else 0.8
                         if time.time() - last_watt_apply > interval:
                             try:
+                                if self._target_watt > 0 and not self._erg_control_granted and time.time() - self._last_erg_attempt > 3.0 and self._erg_retry_count < 5:
+                                    try:
+                                        if hasattr(self.protocol, 'set_program'):
+                                            self.protocol.set_program(1)
+                                    except Exception:
+                                        pass
+                                    self._last_erg_attempt = time.time()
+                                    self._erg_retry_count += 1
                                 if last_target_watt_sent != self._target_watt:
                                     self.protocol.set_watt(self._target_watt)
                                     last_target_watt_sent = self._target_watt
@@ -210,6 +225,8 @@ class DaumBridge:
 
     def set_target_watt(self, watts: int):
         self._target_watt = max(0, min(800, int(watts)))
+        if self._target_watt > 0:
+            self._last_erg_attempt = time.time()
         if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_watt(self._target_watt)

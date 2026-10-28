@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from fastapi import FastAPI, Request
@@ -39,7 +40,6 @@ def create_app(bridge) -> FastAPI:
     async def get_config():
         try:
             from ..config import Config
-            import yaml
             cfg = Config.load()
             data = {
                 "serial": {"port": cfg.serial.port, "baudrate": cfg.serial.baudrate},
@@ -51,6 +51,40 @@ def create_app(bridge) -> FastAPI:
             return JSONResponse(data)
         except Exception as e:
             return JSONResponse({"error": str(e)})
+
+    @app.post("/api/config")
+    async def post_config(data: dict):
+        try:
+            import yaml
+            cfg_path = Path('config.yaml')
+            if not cfg_path.exists():
+                from shutil import copyfile
+                copyfile('config.example.yaml', 'config.yaml')
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            if 'serial' in data:
+                cfg.setdefault('serial', {})
+                if 'port' in data['serial']:
+                    cfg['serial']['port'] = data['serial']['port'] or None
+                if 'baudrate' in data['serial']:
+                    cfg['serial']['baudrate'] = int(data['serial']['baudrate'])
+            if 'ble' in data:
+                cfg.setdefault('ble', {})
+                if 'device_name' in data['ble']:
+                    cfg['ble']['device_name'] = data['ble']['device_name']
+                if 'adapter' in data['ble']:
+                    cfg['ble']['adapter'] = data['ble']['adapter']
+                if 'enabled' in data['ble']:
+                    cfg['ble']['enabled'] = bool(data['ble']['enabled'])
+            if 'logging' in data:
+                cfg.setdefault('logging', {})
+                if 'log_raw_frames' in data['logging']:
+                    cfg['logging']['log_raw_frames'] = bool(data['logging']['log_raw_frames'])
+            with open(cfg_path, 'w') as f:
+                yaml.safe_dump(cfg, f, sort_keys=False)
+            return JSONResponse({"ok": True})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     @app.get("/api/state")
     async def api_state():
@@ -100,6 +134,15 @@ def create_app(bridge) -> FastAPI:
     async def diagnostics():
         if not bridge:
             return JSONResponse({"error": "no bridge"})
+        now = time.time()
+        uptime = now - getattr(bridge, '_start_time', now)
+        serial_since = getattr(bridge, '_serial_connected_time')
+        serial_since_sec = int(now - serial_since) if serial_since else None
+        app_since = getattr(bridge, '_app_connected_time')
+        if (getattr(bridge, '_app_connected', False) or getattr(bridge, '_client_connected', False)) and app_since is None:
+            bridge._app_connected_time = now
+            app_since = bridge._app_connected_time
+        app_since_sec = int(now - app_since) if app_since else None
         s = bridge.state
         return JSONResponse({
             "serial_connected": getattr(bridge.protocol, '_address_found', False) if bridge.protocol else False,
@@ -108,6 +151,11 @@ def create_app(bridge) -> FastAPI:
             "target_watt": getattr(bridge, '_target_watt', 0),
             "erg_control_granted": getattr(bridge, '_erg_control_granted', False),
             "consecutive_errors": getattr(bridge, '_consecutive_errors', 0),
+            "app_connected": getattr(bridge, '_app_connected', False) or getattr(bridge, '_client_connected', False),
+            "virtual_shifting_enabled": getattr(bridge, '_virtual_shifting_enabled', True),
+            "uptime_seconds": int(uptime),
+            "serial_connected_seconds": serial_since_sec,
+            "app_connected_seconds": app_since_sec,
             "state": {
                 "power": s.power,
                 "cadence": s.cadence,
@@ -142,8 +190,42 @@ def create_app(bridge) -> FastAPI:
     @app.post("/api/target/watt")
     async def set_target_watt(data: dict):
         watts = data.get("watts", 0)
-        if bridge:
-            bridge.set_target_watt(int(watts))
-        return JSONResponse({"ok": True, "watts": watts})
+        try:
+            if bridge:
+                bridge.set_target_watt(int(watts))
+            return JSONResponse({"ok": True, "watts": int(watts)})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app.post("/api/reconnect/serial")
+    async def reconnect_serial():
+        if not bridge:
+            return JSONResponse({"ok": False, "error": "no bridge"})
+        try:
+            try:
+                if bridge.serial_port and hasattr(bridge.serial_port, 'close'):
+                    try:
+                        bridge.serial_port.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            bridge.protocol = None
+            bridge.serial_port = None
+            try:
+                bridge.connect()
+                if bridge.protocol:
+                    try:
+                        bridge.protocol.request_address()
+                    except Exception:
+                        pass
+                bridge._consecutive_errors = 0
+                import time as _time
+                bridge._last_reconnect = _time.time()
+                return JSONResponse({"ok": True})
+            except Exception as e:
+                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     return app

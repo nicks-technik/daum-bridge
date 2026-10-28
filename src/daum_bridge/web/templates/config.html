@@ -49,6 +49,12 @@
                 <input type="text" id="adapter" value="hci0">
             </div>
         </div>
+        <div class="section">
+            <h2>Logging</h2>
+            <div class="form-group">
+                <label><input type="checkbox" id="logRaw" style="width: auto;"> Log raw frames</label>
+            </div>
+        </div>
         <button onclick="save()">Save Config</button>
         <p style="color: #94a3b8; margin-top: 15px;">Note: Restart the bridge for changes to take effect.</p>
     </div>
@@ -59,12 +65,40 @@
                 const data = await res.json();
                 if (data.serial) document.getElementById('serialPort').value = data.serial.port || '';
                 if (data.serial) document.getElementById('baudrate').value = data.serial.baudrate;
-                if (data.ble) document.getElementById('bleName').value = data.ble.device_name;
-                if (data.ble) document.getElementById('adapter').value = data.ble.adapter;
+                if (data.ble) document.getElementById('bleName').value = data.ble.device_name || 'DAUM-8008-TRS';
+                if (data.ble) document.getElementById('adapter').value = data.ble.adapter || 'hci0';
+                if (data.logging) document.getElementById('logRaw').checked = !!data.logging.log_raw_frames;
             } catch(e) {}
         }
         async function save() {
-            alert('Edit config.yaml manually or use the API. Restart required.');
+            try {
+                const data = {
+                    serial: {
+                        port: document.getElementById('serialPort').value || null,
+                        baudrate: parseInt(document.getElementById('baudrate').value)
+                    },
+                    ble: {
+                        device_name: document.getElementById('bleName').value,
+                        adapter: document.getElementById('adapter').value
+                    },
+                    logging: {
+                        log_raw_frames: document.getElementById('logRaw').checked
+                    }
+                };
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const result = await res.json();
+                if (result.ok) {
+                    alert('Config saved. Restart required for some changes.');
+                } else {
+                    alert('Error: ' + (result.error || 'unknown'));
+                }
+            } catch(e) {
+                alert('Error: ' + e);
+            }
         }
         load();
     </script>

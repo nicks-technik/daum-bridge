@@ -1,5 +1,7 @@
 # Daum 8008 TRS Protocol Notes
 
+See also: [installation.md](installation.md), [overview.md](overview.md), [handling.md](handling.md), [wsl-prep.md](wsl-prep.md)
+
 Based on analysis of [weinzmi/daumUSB2BLE/daumUSB.js](https://github.com/weinzmi/daumUSB2BLE).
 
 ## Connection

@@ -47,6 +47,9 @@ class DaumProtocol:
         self._address = None
         self._address_found = False
         self._last_data_time = 0.0
+        self._buffer = bytearray()
+        self._frames_seen = []
+        self._raw_log = []
 
     def _write(self, data: bytes):
         if self.log_raw:
@@ -60,7 +63,14 @@ class DaumProtocol:
     def _read_available(self) -> bytes:
         try:
             if hasattr(self.ser, "in_waiting") and self.ser.in_waiting:
-                return self.ser.read(self.ser.in_waiting)
+                data = self.ser.read(self.ser.in_waiting)
+                if data:
+                    self._buffer.extend(data)
+                    if self.log_raw:
+                        self._raw_log.append(data)
+                        if len(self._raw_log) > 1000:
+                            self._raw_log = self._raw_log[-1000:]
+                return data
             return b""
         except Exception as e:
             log.error("Serial read error: %s", e)
@@ -126,13 +136,14 @@ class DaumProtocol:
             return False
         if self.log_raw:
             log.debug("RX: %s", data.hex())
-        # Parsing based on daumUSB.js logic
-        states = list(data)
+        self._buffer.extend(data)
+        states = list(self._buffer)
         n = len(states)
         i = 0
+        consumed = 0
         while i < n:
             b = states[i]
-            # Address discovery: look for 0xA1 followed by address
+            # Address discovery
             if b == 0xA1 and not self._address_found and i + 1 < n:
                 addr = states[i + 1]
                 self._address = addr
@@ -140,39 +151,37 @@ class DaumProtocol:
                 self.state.cockpit_address = addr
                 self.state.connected = True
                 log.info("Found Daum cockpit address: 0x%02X", addr)
+                consumed = max(consumed, i + 2)
                 i += 2
                 continue
-            # Person data (heart rate) - 0xA2
+            # Person data
             if self._address_found and self._address is not None and b == 0xA2 and i + 2 < n:
                 addr_byte = states[i + 1]
                 try:
                     if addr_byte == self._address:
                         idx = i
-                        # Try common offsets for HR in person data
-                        for off in [5, 6, 7, 8, 9, 4]:
+                        for off in [5, 6, 7, 8, 9, 4, 10]:
                             if idx + off < n:
                                 hr = states[idx + off]
                                 if isinstance(hr, int) and 40 <= hr <= 220:
                                     self.state.heart_rate = int(hr)
                                     break
+                        consumed = max(consumed, i + 12)
                         i += 1
                         continue
                 except Exception:
                     pass
-            # run_data parsing when address found
+            # run_data
             if self._address_found and self._address is not None and b == 0xA4 and i + 2 < n:
                 addr_byte = states[i + 1]
-                # Check if address matches
                 try:
                     if addr_byte == self._address and states[i + 2] == 0:
                         idx = i
                         try:
-                            # RPM/Cadence at offset +6
                             if idx + 6 < n:
                                 rpm = states[idx + 6]
                                 if isinstance(rpm, int) and 0 <= rpm <= 200:
                                     self.state.cadence = float(rpm)
-                            # Power at offset +5
                             if idx + 5 < n:
                                 power_raw = states[idx + 5]
                                 if isinstance(power_raw, int):
@@ -180,17 +189,14 @@ class DaumProtocol:
                                         self.state.power = 0.0
                                     else:
                                         self.state.power = float(power_raw) * 5.0
-                            # Gear at offset +16
                             if idx + 16 < n:
                                 gear = states[idx + 16]
                                 if isinstance(gear, int) and 1 <= gear <= 28:
                                     self.state.gear = gear
-                            # Speed at offset +7 (km/h or similar)
                             if idx + 7 < n:
                                 spd = states[idx + 7]
                                 if isinstance(spd, int) and 0 <= spd <= 150:
                                     self.state.speed = float(spd)
-                            # Distance/time attempts
                             if idx + 10 < n:
                                 dist = states[idx + 10]
                                 if isinstance(dist, int) and 0 <= dist <= 9999:
@@ -199,7 +205,6 @@ class DaumProtocol:
                                 t = states[idx + 12]
                                 if isinstance(t, int) and 0 <= t <= 9999:
                                     self.state.elapsed_time = int(t)
-                            # Program at offset +2
                             if idx + 2 < n:
                                 program = states[idx + 2]
                                 if isinstance(program, int):
@@ -208,10 +213,15 @@ class DaumProtocol:
                             self._last_data_time = time.time()
                         except Exception as ex:
                             log.debug("Error extracting run data: %s", ex)
+                        consumed = max(consumed, i + 20)
                         i += 1
                         continue
                 except Exception:
                     pass
             i += 1
+        if consumed > 0 and consumed <= len(self._buffer):
+            del self._buffer[:consumed]
+        elif consumed == 0 and len(self._buffer) > 512:
+            self._buffer.clear()
         self._last_data_time = time.time()
         return self._address_found
