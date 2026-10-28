@@ -88,12 +88,13 @@ class Service(ServiceInterface):
 
 
 class Characteristic(ServiceInterface):
-    def __init__(self, object_path, uuid, flags, service_path):
+    def __init__(self, object_path, uuid, flags, service_path, bus=None):
         super().__init__('org.bluez.GattCharacteristic1')
         self.path = object_path
         self.uuid = uuid
         self.flags = flags
         self.service_path = service_path
+        self.bus = bus
         self.value = []
         self.notifying = False
         self._notify_callback = None
@@ -142,6 +143,18 @@ class Characteristic(ServiceInterface):
                 self._notify_callback(bytes(value))
             except Exception as e:
                 log.debug(f"Write callback error: {e}")
+
+    async def send_notification(self, data: bytes):
+        try:
+            if not self.notifying or not self.bus:
+                return False
+            # Emit PropertiesChanged for Value
+            self.value = list(data)
+            self.emit_properties_changed({'Value': Variant('ay', self.value)})
+            return True
+        except Exception as e:
+            log.debug(f"send_notification error: {e}")
+            return False
 
 
 class BLEFTMSBackend:
@@ -229,34 +242,54 @@ class BLEFTMSBackend:
         
         # Fitness Machine Feature (read)
         feature_path = f'{ftms_service_path}/char0'
-        feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path)
-        # Feature bits: bit 1 = Cadence supported, bit 2 = Total Distance supported, bit 6 = Power Measurement Supported
-        # For indoor bike: power and cadence
-        features = 0x00000042  # simplified
+        feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path, bus=self._bus)
+        # Feature bits: bit 1 = Cadence supported, bit 6 = Power Measurement Supported (simplified)
+        features = 0x00000042
         feature_char.value = list(struct.pack('<I', features))
         self._bus.export(feature_path, feature_char)
         self._objects.append(feature_char)
         
         # Indoor Bike Data (notify)
         ibd_path = f'{ftms_service_path}/char1'
-        ibd_char = Characteristic(ibd_path, INDOOR_BIKE_DATA_UUID, ['notify'], ftms_service_path)
+        ibd_char = Characteristic(ibd_path, INDOOR_BIKE_DATA_UUID, ['notify'], ftms_service_path, bus=self._bus)
         self._indoor_bike_data_char = ibd_char
         self._bus.export(ibd_path, ibd_char)
         self._objects.append(ibd_char)
         
         # Fitness Machine Status (notify)
         status_path = f'{ftms_service_path}/char2'
-        status_char = Characteristic(status_path, FITNESS_MACHINE_STATUS_UUID, ['notify'], ftms_service_path)
+        status_char = Characteristic(status_path, FITNESS_MACHINE_STATUS_UUID, ['notify'], ftms_service_path, bus=self._bus)
         self._bus.export(status_path, status_char)
         self._objects.append(status_char)
         
         # Fitness Machine Control Point (write, indicate)
         cp_path = f'{ftms_service_path}/char3'
-        cp_char = Characteristic(cp_path, FITNESS_MACHINE_CONTROL_POINT_UUID, ['write', 'indicate'], ftms_service_path)
+        cp_char = Characteristic(cp_path, FITNESS_MACHINE_CONTROL_POINT_UUID, ['write', 'indicate'], ftms_service_path, bus=self._bus)
         cp_char._notify_callback = self._handle_control_point
         self._control_point_char = cp_char
         self._bus.export(cp_path, cp_char)
         self._objects.append(cp_char)
+        
+        # Device Information Service
+        try:
+            dis_service_path = f'{self._app_path}/service1'
+            dis_service = Service(dis_service_path, DEVICE_INFORMATION_SERVICE_UUID, primary=True)
+            self._bus.export(dis_service_path, dis_service)
+            self._objects.append(dis_service)
+            # Manufacturer Name
+            mn_path = f'{dis_service_path}/char0'
+            mn_char = Characteristic(mn_path, MANUFACTURER_NAME_UUID, ['read'], dis_service_path, bus=self._bus)
+            mn_char.value = list("Daum".encode('utf-8'))
+            self._bus.export(mn_path, mn_char)
+            self._objects.append(mn_char)
+            # Model Number
+            mdl_path = f'{dis_service_path}/char1'
+            mdl_char = Characteristic(mdl_path, MODEL_NUMBER_UUID, ['read'], dis_service_path, bus=self._bus)
+            mdl_char.value = list("8008-TRS".encode('utf-8'))
+            self._bus.export(mdl_path, mdl_char)
+            self._objects.append(mdl_char)
+        except Exception as e:
+            log.debug(f"DIS setup error: {e}")
         
         # Register application
         try:
@@ -348,17 +381,20 @@ class BLEFTMSBackend:
                     if hasattr(state, 'power') and state.power is not None:
                         try:
                             power = int(float(state.power))
-                            # Handle signed
-                            if power < 0:
-                                power = power & 0xFFFF
                         except Exception:
                             power = 0
                     else:
                         power = 0
+                    # pack as signed 16-bit little endian
                     packet += struct.pack('<h', power & 0xFFFF)
-                    self._indoor_bike_data_char.value = list(packet)
                     if self._indoor_bike_data_char.notifying:
-                        log.debug("FTMS notifying IBP: cadence=%s power=%s", state.cadence, state.power)
+                        try:
+                            await self._indoor_bike_data_char.send_notification(bytes(packet))
+                        except Exception:
+                            pass
+                    else:
+                        self._indoor_bike_data_char.value = list(packet)
+                    log.debug("FTMS IBP: cadence=%s power=%s notifying=%s", state.cadence, state.power, self._indoor_bike_data_char.notifying)
             except Exception as e:
                 log.debug("Notify loop error: %s", e)
             await asyncio.sleep(0.25)
