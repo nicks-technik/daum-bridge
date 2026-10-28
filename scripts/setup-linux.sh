@@ -36,7 +36,10 @@ sudo apt install -y \
     libbluetooth-dev \
     dbus \
     libdbus-1-dev \
-    libglib2.0-dev
+    libglib2.0-dev \
+    usbutils \
+    python3-dbus \
+    python3-gi
 
 # Add user to required groups
 echo -e "${GREEN}[3/7] Adding user to dialout and bluetooth groups...${NC}"
