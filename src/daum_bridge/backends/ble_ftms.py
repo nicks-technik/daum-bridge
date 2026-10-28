@@ -30,6 +30,9 @@ FITNESS_MACHINE_STATUS_UUID = '00002ad3-0000-1000-8000-00805f9b34fb'
 DEVICE_INFORMATION_SERVICE_UUID = '0000180a-0000-1000-8000-00805f9b34fb'
 MANUFACTURER_NAME_UUID = '00002a29-0000-1000-8000-00805f9b34fb'
 MODEL_NUMBER_UUID = '00002a24-0000-1000-8000-00805f9b34fb'
+HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
+HEART_RATE_MEASUREMENT_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
+BODY_SENSOR_LOCATION_UUID = '00002a38-0000-1000-8000-00805f9b34fb'
 GATT_CHARACTERISTIC_USER_DESC_UUID = '00002901-0000-1000-8000-00805f9b34fb'
 GATT_CLIENT_CHAR_CFG_UUID = '00002902-0000-1000-8000-00805f9b34fb'
 
@@ -176,6 +179,7 @@ class BLEFTMSBackend:
         self._control_point_enabled = False
         self._fitness_machine_status_char = None
         self._last_cp_req = None
+        self._heart_rate_char = None
 
     async def start(self):
         log.info("Starting BLE FTMS backend on %s as %s", self._adapter, self._device_name)
@@ -245,20 +249,11 @@ class BLEFTMSBackend:
         # Fitness Machine Feature (read)
         feature_path = f'{ftms_service_path}/char0'
         feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path, bus=self._bus)
-        # FTMS features (bits)
-        # bit 0: Avg Speed supported, bit 1: Cadence supported, bit 2: Total Distance supported
-        # bit 3: Inclination supported, bit 4: Elevation Gain supported, bit 5: Pace supported
-        # bit 6: Step Count supported, bit 7: Resistance Level supported
-        # bit 8: Stride Count supported, bit 9: Expended Energy supported, bit 10: Heart Rate Measurement supported
-        # bit 11: Metabolic Equivalent supported, bit 12: Elapsed Time supported, bit 13: Remaining Time supported
-        # bit 14: Power Measurement supported, bit 15: Force on Belt and Power Output supported
-        # bit 16: User Data Retention supported
-        # Target Setting features
         fitness_machine_features = 0x00000000
         target_setting_features = 0x00000000
-        # Cadence (bit 1) + Power (bit 14)
-        fitness_machine_features |= (1 << 1) | (1 << 14)
-        # Target Power supported (bit 1 in target setting features)
+        # Cadence (bit 1) + Power (bit 14) + Heart Rate Measurement (bit 10)
+        fitness_machine_features |= (1 << 1) | (1 << 10) | (1 << 14)
+        # Target Power supported (bit 1)
         target_setting_features |= (1 << 1)
         features = struct.pack('<II', fitness_machine_features, target_setting_features)
         feature_char.value = list(features)
@@ -287,9 +282,30 @@ class BLEFTMSBackend:
         self._bus.export(cp_path, cp_char)
         self._objects.append(cp_char)
         
+        # Heart Rate Service
+        try:
+            hrs_service_path = f'{self._app_path}/service1'
+            hrs_service = Service(hrs_service_path, HEART_RATE_SERVICE_UUID, primary=True)
+            self._bus.export(hrs_service_path, hrs_service)
+            self._objects.append(hrs_service)
+            # Heart Rate Measurement (notify)
+            hrm_path = f'{hrs_service_path}/char0'
+            hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus)
+            self._heart_rate_char = hrm_char
+            self._bus.export(hrm_path, hrm_char)
+            self._objects.append(hrm_char)
+            # Body Sensor Location (read)
+            bsl_path = f'{hrs_service_path}/char1'
+            bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus)
+            bsl_char.value = [0x01]  # Chest
+            self._bus.export(bsl_path, bsl_char)
+            self._objects.append(bsl_char)
+        except Exception as e:
+            log.debug(f"HRS setup error: {e}")
+        
         # Device Information Service
         try:
-            dis_service_path = f'{self._app_path}/service1'
+            dis_service_path = f'{self._app_path}/service2'
             dis_service = Service(dis_service_path, DEVICE_INFORMATION_SERVICE_UUID, primary=True)
             self._bus.export(dis_service_path, dis_service)
             self._objects.append(dis_service)
@@ -326,6 +342,11 @@ class BLEFTMSBackend:
             introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
             proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
             adv_manager = proxy_obj.get_interface('org.bluez.LEAdvertisingManager1')
+            # Advertise FTMS and HR services
+            try:
+                self._advertisement.ServiceUUIDs = [FTMS_UUID, HEART_RATE_SERVICE_UUID]
+            except Exception:
+                pass
             await adv_manager.call_register_advertisement(self._adv_path, {})
             log.info("LE Advertisement registered")
         except Exception as e:
@@ -455,39 +476,50 @@ class BLEFTMSBackend:
     async def _notify_loop(self):
         while self._running:
             try:
-                if self.bridge and hasattr(self.bridge, 'state') and self._indoor_bike_data_char:
+                if self.bridge and hasattr(self.bridge, 'state'):
                     state = self.bridge.state
-                    # Pack Indoor Bike Data (FTMS 0x2AD2)
-                    flags = 0x0042  # cadence present (bit 1) + power present (bit 6)
-                    packet = bytearray()
-                    packet += struct.pack('<H', flags)
-                    # Instantaneous Cadence (uint16, resolution 0.5 rpm)
-                    if hasattr(state, 'cadence') and state.cadence is not None:
-                        try:
-                            cadence = int(round(float(state.cadence) * 2)) & 0xFFFF
-                        except Exception:
+                    # Indoor Bike Data
+                    if self._indoor_bike_data_char:
+                        flags = 0x0042  # cadence present (bit 1) + power present (bit 6)
+                        packet = bytearray()
+                        packet += struct.pack('<H', flags)
+                        if hasattr(state, 'cadence') and state.cadence is not None:
+                            try:
+                                cadence = int(round(float(state.cadence) * 2)) & 0xFFFF
+                            except Exception:
+                                cadence = 0
+                        else:
                             cadence = 0
-                    else:
-                        cadence = 0
-                    packet += struct.pack('<H', cadence)
-                    # Instantaneous Power (sint16, watts)
-                    if hasattr(state, 'power') and state.power is not None:
-                        try:
-                            power = int(float(state.power))
-                        except Exception:
+                        packet += struct.pack('<H', cadence)
+                        if hasattr(state, 'power') and state.power is not None:
+                            try:
+                                power = int(float(state.power))
+                            except Exception:
+                                power = 0
+                        else:
                             power = 0
-                    else:
-                        power = 0
-                    # pack as signed 16-bit little endian
-                    packet += struct.pack('<h', power & 0xFFFF)
-                    if self._indoor_bike_data_char.notifying:
+                        packet += struct.pack('<h', power & 0xFFFF)
+                        if self._indoor_bike_data_char.notifying:
+                            try:
+                                await self._indoor_bike_data_char.send_notification(bytes(packet))
+                            except Exception:
+                                pass
+                        else:
+                            self._indoor_bike_data_char.value = list(packet)
+                    # Heart Rate
+                    if self._heart_rate_char and hasattr(state, 'heart_rate') and state.heart_rate and state.heart_rate > 0:
                         try:
-                            await self._indoor_bike_data_char.send_notification(bytes(packet))
+                            hr = int(state.heart_rate)
+                            if 40 <= hr <= 220:
+                                # HRM: flags (0x00 = UINT8) + HR value
+                                hr_packet = bytearray([0x00, hr & 0xFF])
+                                if self._heart_rate_char.notifying:
+                                    await self._heart_rate_char.send_notification(bytes(hr_packet))
+                                else:
+                                    self._heart_rate_char.value = list(hr_packet)
                         except Exception:
                             pass
-                    else:
-                        self._indoor_bike_data_char.value = list(packet)
-                    log.debug("FTMS IBP: cadence=%s power=%s notifying=%s", state.cadence, state.power, self._indoor_bike_data_char.notifying)
+                    log.debug("FTMS IBP: cadence=%s power=%s hr=%s", getattr(state, 'cadence', None), getattr(state, 'power', None), getattr(state, 'heart_rate', None))
             except Exception as e:
                 log.debug("Notify loop error: %s", e)
             await asyncio.sleep(0.25)

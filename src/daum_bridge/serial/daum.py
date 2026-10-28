@@ -128,28 +128,43 @@ class DaumProtocol:
                 log.info("Found Daum cockpit address: 0x%02X", addr)
                 i += 2
                 continue
+            # Person data (heart rate) - 0xA2
+            if self._address_found and self._address is not None and b == 0xA2 and i + 2 < n:
+                addr_byte = states[i + 1]
+                try:
+                    if addr_byte == self._address:
+                        idx = i
+                        # Try common offsets for HR in person data
+                        for off in [5, 6, 7, 8, 9, 4]:
+                            if idx + off < n:
+                                hr = states[idx + off]
+                                if isinstance(hr, int) and 40 <= hr <= 220:
+                                    self.state.heart_rate = int(hr)
+                                    break
+                        i += 1
+                        continue
+                except Exception:
+                    pass
             # run_data parsing when address found
             if self._address_found and self._address is not None and b == 0xA4 and i + 2 < n:
                 addr_byte = states[i + 1]
-                # Check if address matches (as hex string comparison like in JS)
+                # Check if address matches
                 try:
                     if addr_byte == self._address and states[i + 2] == 0:
                         idx = i
-                        # Extract values based on daumUSB.js offsets
                         try:
                             # RPM/Cadence at offset +6
                             if idx + 6 < n:
                                 rpm = states[idx + 6]
-                                if isinstance(rpm, int) and 0 <= rpm <= 200:  # reasonable range
+                                if isinstance(rpm, int) and 0 <= rpm <= 200:
                                     self.state.cadence = float(rpm)
-                            # Power at offset +5 (if rpm > 0)
+                            # Power at offset +5
                             if idx + 5 < n:
                                 power_raw = states[idx + 5]
                                 if isinstance(power_raw, int):
                                     if self.state.cadence == 0 or power_raw == 0:
                                         self.state.power = 0.0
                                     else:
-                                        # Power factor is 5 according to JS comments
                                         self.state.power = float(power_raw) * 5.0
                             # Gear at offset +16
                             if idx + 16 < n:
