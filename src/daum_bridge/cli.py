@@ -43,7 +43,8 @@ def version():
 @app.command()
 def calibrate(
     port: Optional[str] = typer.Option(None, "--port", "-p", help="Serial port"),
-    seconds: int = typer.Option(10, "--seconds", "-s", help="Capture duration"),
+    seconds: int = typer.Option(15, "--seconds", "-s", help="Capture duration"),
+    write_config: bool = typer.Option(False, "--write-config", help="Show config suggestions"),
 ):
     """Calibrate serial protocol offsets by capturing raw frames."""
     from .serial.port import auto_detect_daum_port, open_serial, list_serial_ports
