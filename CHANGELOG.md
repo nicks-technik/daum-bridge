@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-29
+
+### Changed
+- `DaumBridge` was split into focused collaborators: ride statistics and
+  trackpoints now live in `RideRecorder`, and the gear/resistance translation in
+  `gears`. `_current_ride`, `_ride_history` and `_ride_paused` remain available
+  as views onto the recorder, so the web layer and tests are unaffected.
+- The web layer was split into `web.routes` (`pages`, `state`, `rides`,
+  `integrations`, `control`, `config`) plus `web.snapshot`; `web/app.py` now only
+  assembles the application. All 29 routes keep their paths and response shapes.
+- `config.yaml` is parsed one section at a time instead of inside a single
+  `try` block, and shared helpers (`numbers`, `formatting`) replace the private
+  copies in the CLI, the TCX/email integrations and both backends.
+- `cli.py` loads rides through one `_load_ride()` helper shared by
+  `strava-upload`, `email-ride` and `export-tcx`.
+
+### Fixed
+- A single unreadable value in `config.yaml` (for example `serial.baudrate`)
+  no longer discards every section after it. Only the affected field falls back
+  to its default and the remaining sections are still applied.
+- `GET /api/diagnostics` no longer restarts the "app connected for" timer on
+  every poll; the endpoint is read-only and the timestamp is recorded when the
+  app actually connects.
+
+### Removed
+- The dead `DaumBridge._client_connected` flag. The API still reports
+  `client_connected` as an alias of `app_connected` for older clients.
+
 ## [0.4.0] - 2026-10-29
 
 ### Added
