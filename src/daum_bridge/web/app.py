@@ -139,7 +139,25 @@ def create_app(bridge) -> FastAPI:
                 "bridge": {
                     "poll_interval": cfg.bridge.poll_interval,
                     "max_gear": getattr(cfg.bridge, "max_gear", 20),
-                }
+                },
+                "input": {
+                    "enabled": getattr(cfg.input, "enabled", False),
+                    "backend": getattr(cfg.input, "backend", "both"),
+                    "shift_clears_erg": getattr(cfg.input, "shift_clears_erg", True),
+                    "repeat_delay": getattr(cfg.input, "repeat_delay", 0.45),
+                    "repeat_interval": getattr(cfg.input, "repeat_interval", 0.12),
+                    "gpio": {
+                        "up_pin": getattr(cfg.input.gpio, "up_pin", 17),
+                        "down_pin": getattr(cfg.input.gpio, "down_pin", 27),
+                        "bounce_time": getattr(cfg.input.gpio, "bounce_time", 0.05),
+                        "active_low": getattr(cfg.input.gpio, "active_low", True),
+                    },
+                    "evdev": {
+                        "device": getattr(cfg.input.evdev, "device", ""),
+                        "up_key": getattr(cfg.input.evdev, "up_key", "KEY_VOLUMEUP"),
+                        "down_key": getattr(cfg.input.evdev, "down_key", "KEY_VOLUMEDOWN"),
+                    },
+                },
             }
             return JSONResponse(data)
         except Exception as e:
@@ -188,6 +206,40 @@ def create_app(bridge) -> FastAPI:
                         cfg['bridge']['max_gear'] = int(data['bridge']['max_gear'])
                     except (TypeError, ValueError):
                         pass
+            if 'input' in data:
+                cfg.setdefault('input', {})
+                inp = data['input'] or {}
+                for key in ('enabled', 'shift_clears_erg'):
+                    if key in inp:
+                        cfg['input'][key] = bool(inp[key])
+                if 'backend' in inp:
+                    cfg['input']['backend'] = str(inp['backend'] or 'both')
+                for key in ('repeat_delay', 'repeat_interval'):
+                    if key in inp:
+                        try:
+                            cfg['input'][key] = float(inp[key])
+                        except (TypeError, ValueError):
+                            pass
+                if isinstance(inp.get('gpio'), dict):
+                    gpio = cfg['input'].setdefault('gpio', {})
+                    for key in ('up_pin', 'down_pin'):
+                        if key in inp['gpio']:
+                            try:
+                                gpio[key] = int(inp['gpio'][key])
+                            except (TypeError, ValueError):
+                                pass
+                    if 'bounce_time' in inp['gpio']:
+                        try:
+                            gpio['bounce_time'] = float(inp['gpio']['bounce_time'])
+                        except (TypeError, ValueError):
+                            pass
+                    if 'active_low' in inp['gpio']:
+                        gpio['active_low'] = bool(inp['gpio']['active_low'])
+                if isinstance(inp.get('evdev'), dict):
+                    evdev_cfg = cfg['input'].setdefault('evdev', {})
+                    for key in ('device', 'up_key', 'down_key'):
+                        if key in inp['evdev']:
+                            evdev_cfg[key] = str(inp['evdev'][key] or '')
             if 'logging' in data:
                 cfg.setdefault('logging', {})
                 if 'log_raw_frames' in data['logging']:
@@ -253,6 +305,7 @@ def create_app(bridge) -> FastAPI:
             "client_connected": getattr(bridge, '_client_connected', False),
             "virtual_shifting": getattr(bridge, '_virtual_shifting_enabled', True),
             "ride_paused": getattr(bridge, '_ride_paused', False),
+            "input": bridge.input_status() if hasattr(bridge, "input_status") else {},
         })
 
     @app.get("/api/status")
@@ -307,6 +360,7 @@ def create_app(bridge) -> FastAPI:
             "consecutive_errors": getattr(bridge, '_consecutive_errors', 0),
             "app_connected": getattr(bridge, '_app_connected', False) or getattr(bridge, '_client_connected', False),
             "virtual_shifting_enabled": getattr(bridge, '_virtual_shifting_enabled', True),
+            "input": bridge.input_status() if hasattr(bridge, "input_status") else {},
             "uptime_seconds": int(uptime),
             "serial_connected_seconds": serial_since_sec,
             "app_connected_seconds": app_since_sec,

@@ -57,6 +57,39 @@
             </div>
         </div>
         <div class="section">
+            <h2>Handlebar shift buttons</h2>
+            <div class="form-group">
+                <label><input type="checkbox" id="inputEnabled" style="width: auto;"> Enable physical shift buttons</label>
+            </div>
+            <div class="form-group">
+                <label>Backend</label>
+                <select id="inputBackend">
+                    <option value="both">Both (GPIO and Bluetooth)</option>
+                    <option value="gpio">GPIO only (wired to the Pi)</option>
+                    <option value="evdev">Bluetooth HID only</option>
+                    <option value="none">Disabled</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="inputClearsErg" style="width: auto;"> Leave ERG mode when a button shifts (otherwise the trainer holds its target power and the gear has no effect)</label>
+            </div>
+            <div class="form-group">
+                <label>GPIO pins (BCM): up / down</label>
+                <input type="number" id="gpioUpPin" value="17" min="0" max="27">
+                <input type="number" id="gpioDownPin" value="27" min="0" max="27">
+            </div>
+            <div class="form-group">
+                <label>Bluetooth input device (empty = auto-detect)</label>
+                <input type="text" id="evdevDevice" placeholder="/dev/input/by-id/... or name:shutter">
+            </div>
+            <div class="form-group">
+                <label>Keys: shift up / shift down</label>
+                <input type="text" id="evdevUpKey" value="KEY_VOLUMEUP">
+                <input type="text" id="evdevDownKey" value="KEY_VOLUMEDOWN">
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">Needs <code>uv sync --extra gpio</code> (wired) and/or <code>uv sync --extra input</code> (Bluetooth). Pair BLE buttons with <code>bluetoothctl</code> first and check them with <code>daum-bridge inputs test</code>.</p>
+        </div>
+        <div class="section">
             <h2>ANT+ FE-C</h2>
             <div class="form-group">
                 <label><input type="checkbox" id="antEnabled" style="width: auto;"> Broadcast an ANT+ FE-C trainer (in addition to BLE)</label>
@@ -158,6 +191,20 @@
                     document.getElementById('antNetworkKey').value = data.ant.network_key || '';
                 }
                 if (data.bridge) document.getElementById('maxGear').value = data.bridge.max_gear || 20;
+                if (data.input) {
+                    document.getElementById('inputEnabled').checked = !!data.input.enabled;
+                    document.getElementById('inputBackend').value = data.input.backend || 'both';
+                    document.getElementById('inputClearsErg').checked = data.input.shift_clears_erg !== false;
+                    if (data.input.gpio) {
+                        document.getElementById('gpioUpPin').value = data.input.gpio.up_pin ?? 17;
+                        document.getElementById('gpioDownPin').value = data.input.gpio.down_pin ?? 27;
+                    }
+                    if (data.input.evdev) {
+                        document.getElementById('evdevDevice').value = data.input.evdev.device || '';
+                        document.getElementById('evdevUpKey').value = data.input.evdev.up_key || 'KEY_VOLUMEUP';
+                        document.getElementById('evdevDownKey').value = data.input.evdev.down_key || 'KEY_VOLUMEDOWN';
+                    }
+                }
                 if (data.logging) document.getElementById('logRaw').checked = !!data.logging.log_raw_frames;
                 if (data.strava) {
                     document.getElementById('stravaClientId').value = data.strava.client_id || '';
@@ -195,6 +242,20 @@
                     },
                     bridge: {
                         max_gear: parseInt(document.getElementById('maxGear').value || '20', 10)
+                    },
+                    input: {
+                        enabled: document.getElementById('inputEnabled').checked,
+                        backend: document.getElementById('inputBackend').value,
+                        shift_clears_erg: document.getElementById('inputClearsErg').checked,
+                        gpio: {
+                            up_pin: parseInt(document.getElementById('gpioUpPin').value || '17', 10),
+                            down_pin: parseInt(document.getElementById('gpioDownPin').value || '27', 10)
+                        },
+                        evdev: {
+                            device: document.getElementById('evdevDevice').value || '',
+                            up_key: document.getElementById('evdevUpKey').value || 'KEY_VOLUMEUP',
+                            down_key: document.getElementById('evdevDownKey').value || 'KEY_VOLUMEDOWN'
+                        }
                     },
                     logging: {
                         log_raw_frames: document.getElementById('logRaw').checked
