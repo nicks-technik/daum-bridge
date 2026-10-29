@@ -3,6 +3,36 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-29
+
+### Added
+- Handlebar shift buttons: shift gears from physical buttons instead of the web
+  UI or MyWhoosh. Two interchangeable backends can run together: `gpio` (two
+  momentary buttons on Raspberry Pi BCM pins via gpiozero) and `evdev`
+  (Bluetooth/USB HID buttons read from `/dev/input`, so pairing stays inside
+  BlueZ and does not compete with the FTMS peripheral for the adapter).
+- Hold-to-repeat shifting with a configurable initial delay and interval, plus a
+  minimum interval between shifts that protects the 9600 baud serial link.
+- `daum-bridge inputs list|test|status`: find an input device and its keys,
+  watch the buttons live, and verify the configured backends.
+- Input state in `/api/state` and `/api/diagnostics` (active backends, last
+  shift source, backend problems) and a "Handlebar shift buttons" section on
+  the web config page.
+- Optional extras `uv sync --extra gpio` and `--extra input`; the default
+  installation stays free of hardware dependencies.
+- `docs/gearshift-buttons.md`: wiring (BCM17/BCM27, RC filter), Bluetooth
+  pairing and permissions, hardware options and troubleshooting.
+
+### Changed
+- Gear shifting from the buttons, web UI and CLI now goes through a single
+  `DaumBridge.shift(delta, source)` call.
+- A shift leaves ERG mode by default (`input.shift_clears_erg`), so the gear
+  change actually alters the load.
+
+### Fixed
+- Gear changes requested while ERG mode was active had no effect on the
+  resistance because the cockpit kept holding the last target power.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added
