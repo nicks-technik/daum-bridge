@@ -46,6 +46,22 @@ def dump_yaml_file(path, data: dict) -> None:
         _yaml_dump(data, f)
 
 
+def _cfg_int(value, default: int) -> int:
+    """Best-effort int conversion that never aborts config parsing."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cfg_float(value, default: float) -> float:
+    """Best-effort float conversion that never aborts config parsing."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class SerialConfig:
     port: str = ""
@@ -125,6 +141,43 @@ class EmailConfig:
 
 
 @dataclass
+class GPIOInputConfig:
+    """Wired shift buttons on the Raspberry Pi header."""
+
+    up_pin: int = 17      # BCM17 = physical pin 11
+    down_pin: int = 27    # BCM27 = physical pin 13
+    bounce_time: float = 0.05
+    #: Buttons wired to GND with the internal pull-up (recommended).
+    active_low: bool = True
+
+
+@dataclass
+class EvdevInputConfig:
+    """Bluetooth/USB HID buttons exposed as a Linux input device."""
+
+    #: Path (/dev/input/...), "name:<substring>", or empty to auto-detect.
+    device: str = ""
+    up_key: str = "KEY_VOLUMEUP"
+    down_key: str = "KEY_VOLUMEDOWN"
+
+
+@dataclass
+class InputConfig:
+    """Physical gear-shift buttons (handlebar buttons)."""
+
+    enabled: bool = False
+    #: none | gpio | evdev | both
+    backend: str = "both"
+    #: Leave ERG mode when a button shifts, so the gear actually changes load.
+    shift_clears_erg: bool = True
+    repeat_delay: float = 0.45
+    repeat_interval: float = 0.12
+    min_interval: float = 0.10
+    gpio: GPIOInputConfig = field(default_factory=GPIOInputConfig)
+    evdev: EvdevInputConfig = field(default_factory=EvdevInputConfig)
+
+
+@dataclass
 class LoggingConfig:
     level: str = "INFO"
     log_raw_frames: bool = False
@@ -139,6 +192,7 @@ class Config:
     strava: StravaConfig = field(default_factory=StravaConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    input: InputConfig = field(default_factory=InputConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -212,6 +266,29 @@ class Config:
                     host=str(w.get("host", "0.0.0.0")),
                     port=int(w.get("port", 8080)),
                 )
+            if "input" in data and isinstance(data["input"], dict):
+                inp = data["input"]
+                gpio = inp.get("gpio") if isinstance(inp.get("gpio"), dict) else {}
+                evdev = inp.get("evdev") if isinstance(inp.get("evdev"), dict) else {}
+                cfg.input = InputConfig(
+                    enabled=bool(inp.get("enabled", False)),
+                    backend=str(inp.get("backend", "both") or "both").strip().lower(),
+                    shift_clears_erg=bool(inp.get("shift_clears_erg", True)),
+                    repeat_delay=_cfg_float(inp.get("repeat_delay"), 0.45),
+                    repeat_interval=_cfg_float(inp.get("repeat_interval"), 0.12),
+                    min_interval=_cfg_float(inp.get("min_interval"), 0.10),
+                    gpio=GPIOInputConfig(
+                        up_pin=_cfg_int(gpio.get("up_pin"), 17),
+                        down_pin=_cfg_int(gpio.get("down_pin"), 27),
+                        bounce_time=_cfg_float(gpio.get("bounce_time"), 0.05),
+                        active_low=bool(gpio.get("active_low", True)),
+                    ),
+                    evdev=EvdevInputConfig(
+                        device=str(evdev.get("device", "") or ""),
+                        up_key=str(evdev.get("up_key") or "KEY_VOLUMEUP"),
+                        down_key=str(evdev.get("down_key") or "KEY_VOLUMEDOWN"),
+                    ),
+                )
             if "logging" in data and isinstance(data["logging"], dict):
                 lg = data["logging"]
                 cfg.logging = LoggingConfig(
@@ -236,6 +313,27 @@ class Config:
                 errors.append("poll_interval should be between 0.1 and 5.0")
             if self.bridge.max_gear < 2 or self.bridge.max_gear > 28:
                 errors.append("bridge.max_gear should be between 2 and 28")
+            if self.input.backend not in ("none", "gpio", "evdev", "both"):
+                errors.append(
+                    "input.backend must be one of none, gpio, evdev or both "
+                    f"(got {self.input.backend!r})"
+                )
+            if self.input.enabled and self.input.backend == "none":
+                errors.append("input.enabled is true but input.backend is 'none'")
+            if self.input.gpio.up_pin == self.input.gpio.down_pin:
+                errors.append("input.gpio.up_pin and input.gpio.down_pin must differ")
+            for name, pin in (
+                ("up_pin", self.input.gpio.up_pin),
+                ("down_pin", self.input.gpio.down_pin),
+            ):
+                if not 0 <= pin <= 27:
+                    errors.append(f"input.gpio.{name} should be a BCM pin between 0 and 27")
+            if self.input.repeat_delay < 0:
+                errors.append("input.repeat_delay must be >= 0 (0 disables hold-to-repeat)")
+            if self.input.repeat_interval < 0 or 0 < self.input.repeat_interval < 0.02:
+                errors.append("input.repeat_interval must be 0 (disabled) or >= 0.02")
+            if self.input.min_interval < 0:
+                errors.append("input.min_interval must be >= 0")
             if self.ant.device_id < 0 or self.ant.device_id > 0xFFFF:
                 errors.append("ant.device_id should be between 0 and 65535")
             has_strava_credentials = bool(
@@ -334,6 +432,23 @@ def get_env_overrides(cfg: Config) -> Config:
             pass
     if os.environ.get("DAUM_ANT_NETWORK_KEY"):
         cfg.ant.network_key = os.environ["DAUM_ANT_NETWORK_KEY"]
+    input_enabled = _env_bool("DAUM_INPUT_ENABLED")
+    if input_enabled is not None:
+        cfg.input.enabled = input_enabled
+    if os.environ.get("DAUM_INPUT_BACKEND"):
+        cfg.input.backend = os.environ["DAUM_INPUT_BACKEND"].strip().lower()
+    if os.environ.get("DAUM_GPIO_UP_PIN"):
+        cfg.input.gpio.up_pin = _cfg_int(os.environ["DAUM_GPIO_UP_PIN"], cfg.input.gpio.up_pin)
+    if os.environ.get("DAUM_GPIO_DOWN_PIN"):
+        cfg.input.gpio.down_pin = _cfg_int(
+            os.environ["DAUM_GPIO_DOWN_PIN"], cfg.input.gpio.down_pin
+        )
+    if os.environ.get("DAUM_INPUT_DEVICE"):
+        cfg.input.evdev.device = os.environ["DAUM_INPUT_DEVICE"]
+    if os.environ.get("DAUM_INPUT_UP_KEY"):
+        cfg.input.evdev.up_key = os.environ["DAUM_INPUT_UP_KEY"]
+    if os.environ.get("DAUM_INPUT_DOWN_KEY"):
+        cfg.input.evdev.down_key = os.environ["DAUM_INPUT_DOWN_KEY"]
     for env_name, attr in (
         ("STRAVA_CLIENT_ID", "client_id"),
         ("STRAVA_CLIENT_SECRET", "client_secret"),

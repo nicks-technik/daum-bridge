@@ -38,6 +38,31 @@ web:
   host: "0.0.0.0"
   port: 8080
 
+input:
+  # Handlebar shift buttons (wired GPIO or Bluetooth HID).
+  # Requires the optional extras: uv sync --extra gpio --extra input
+  enabled: false
+  # none | gpio | evdev | both
+  backend: "both"
+  # Leave ERG mode when a button shifts, so the gear actually changes the load.
+  shift_clears_erg: true
+  # Hold a button to keep shifting: first repeat after 0.45 s, then every 0.12 s.
+  repeat_delay: 0.45
+  repeat_interval: 0.12
+  # Minimum time between two shifts (protects the 9600 baud serial link).
+  min_interval: 0.10
+  gpio:
+    # BCM17 = physical pin 11, BCM27 = physical pin 13, common ground on pin 9/14.
+    up_pin: 17
+    down_pin: 27
+    bounce_time: 0.05
+    active_low: true   # button to GND with the internal pull-up
+  evdev:
+    # /dev/input/by-id/... or "name:<substring>"; empty = auto-detect.
+    device: ""
+    up_key: "KEY_VOLUMEUP"
+    down_key: "KEY_VOLUMEDOWN"
+
 strava:
   # Upload rides automatically when they finish (uses saved credentials).
   auto_upload: false
