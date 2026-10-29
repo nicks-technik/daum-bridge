@@ -5,69 +5,57 @@ from fastapi.testclient import TestClient
 
 import json
 
+import pytest
+
 from daum_bridge import history
 from daum_bridge.integrations.strava import StravaClient
 
 
-def test_create_app():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
+@pytest.fixture
+def bridge():
+    """A bridge with default configuration; no serial port is opened."""
+    return DaumBridge(Config())
+
+
+@pytest.fixture
+def client(bridge):
+    """A test client bound to a fresh bridge (and therefore a fresh app)."""
+    return TestClient(create_app(bridge))
+
+
+def test_create_app(bridge):
     app = create_app(bridge)
     assert app is not None
 
 
-def test_index_route():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_index_route(client):
     resp = client.get("/")
     assert resp.status_code == 200
 
 
-def test_config_route():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_config_route(client):
     resp = client.get("/config")
     assert resp.status_code == 200
 
 
-def test_api_state():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_api_state(client):
     resp = client.get("/api/state")
     assert resp.status_code == 200
     data = resp.json()
     assert "connected" in data
 
 
-def test_api_status():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_api_status(client):
     resp = client.get("/api/status")
     assert resp.status_code == 200
 
 
-def test_api_diagnostics():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_api_diagnostics(client):
     resp = client.get("/api/diagnostics")
     assert resp.status_code == 200
 
 
-def test_api_config_get():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_api_config_get(client):
     resp = client.get("/api/config")
     assert resp.status_code == 200
 
@@ -105,38 +93,22 @@ def test_api_config_round_trips_ant_and_max_gear(tmp_path, monkeypatch):
     assert saved.bridge.max_gear == 12
 
 
-def test_shift_up():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_shift_up(client):
     resp = client.post("/api/shift/up")
     assert resp.status_code == 200
 
 
-def test_shift_down():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_shift_down(client):
     resp = client.post("/api/shift/down")
     assert resp.status_code == 200
 
 
-def test_set_gear():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_set_gear(client):
     resp = client.post("/api/gear/5")
     assert resp.status_code == 200
 
 
-def test_set_target_watt():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_set_target_watt(client):
     resp = client.post("/api/target/watt", json={"watts": 150})
     assert resp.status_code == 200
 
@@ -154,16 +126,12 @@ def test_api_strava_status():
     assert "auto_upload" in data
 
 
-def test_strava_upload_unknown_ride():
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
+def test_strava_upload_unknown_ride(client):
     resp = client.post("/api/strava/upload", json={"ride_id": "no-such-ride"})
     assert resp.status_code == 404
 
 
-def test_download_ride_tcx(tmp_path, monkeypatch):
+def test_download_ride_tcx(tmp_path, monkeypatch, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
     ride_id = history.save_ride(
         {
@@ -178,10 +146,6 @@ def test_download_ride_tcx(tmp_path, monkeypatch):
         },
         directory=tmp_path,
     )
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
 
     resp = client.get(f"/api/rides/{ride_id}/tcx")
     assert resp.status_code == 200
@@ -192,17 +156,13 @@ def test_download_ride_tcx(tmp_path, monkeypatch):
     assert "garmin:Watts" in body
 
 
-def test_download_ride_tcx_unknown(tmp_path, monkeypatch):
+def test_download_ride_tcx_unknown(tmp_path, monkeypatch, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
-    cfg = Config()
-    bridge = DaumBridge(cfg)
-    app = create_app(bridge)
-    client = TestClient(app)
     resp = client.get("/api/rides/does-not-exist/tcx")
     assert resp.status_code == 404
 
 
-def test_downloads_page_lists_rides_newest_first(tmp_path, monkeypatch):
+def test_downloads_page_lists_rides_newest_first(tmp_path, monkeypatch, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
     older = history.save_ride(
         {
@@ -229,8 +189,6 @@ def test_downloads_page_lists_rides_newest_first(tmp_path, monkeypatch):
         directory=tmp_path,
     )
 
-    app = create_app(DaumBridge(Config()))
-    client = TestClient(app)
     resp = client.get("/downloads")
     assert resp.status_code == 200
     body = resp.text
@@ -240,24 +198,19 @@ def test_downloads_page_lists_rides_newest_first(tmp_path, monkeypatch):
     assert body.index(f"/api/rides/{newer}/tcx") < body.index(f"/api/rides/{older}/tcx")
 
 
-def test_downloads_page_without_rides(tmp_path, monkeypatch):
+def test_downloads_page_without_rides(tmp_path, monkeypatch, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
-    app = create_app(DaumBridge(Config()))
-    client = TestClient(app)
     resp = client.get("/downloads")
     assert resp.status_code == 200
     assert "No trainings recorded yet" in resp.text
 
 
-def test_finish_ride_endpoint_writes_tcx(tmp_path, monkeypatch):
+def test_finish_ride_endpoint_writes_tcx(tmp_path, monkeypatch, bridge, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
-    bridge = DaumBridge(Config())
     bridge.state.connected = True
     bridge.state.power = 200
     bridge._update_ride_stats()
 
-    app = create_app(bridge)
-    client = TestClient(app)
     resp = client.post("/api/ride/finish")
     assert resp.status_code == 200
     data = resp.json()
@@ -276,7 +229,7 @@ def test_finish_ride_endpoint_writes_tcx(tmp_path, monkeypatch):
     assert client.get("/api/state").json()["ride_paused"] is False
 
 
-def test_email_status_default(tmp_path, monkeypatch):
+def test_email_status_default(tmp_path, monkeypatch, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
     for name in (
         "DAUM_EMAIL_HOST",
@@ -284,8 +237,6 @@ def test_email_status_default(tmp_path, monkeypatch):
         "DAUM_EMAIL_FROM",
     ):
         monkeypatch.delenv(name, raising=False)
-    app = create_app(DaumBridge(Config()))
-    client = TestClient(app)
     resp = client.get("/api/email/status")
     assert resp.status_code == 200
     data = resp.json()
@@ -293,7 +244,7 @@ def test_email_status_default(tmp_path, monkeypatch):
     assert data["auto_send"] is False
 
 
-def test_email_ride_endpoint(tmp_path, monkeypatch):
+def test_email_ride_endpoint(tmp_path, monkeypatch, bridge, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
     ride_id = history.save_ride(
         {
@@ -304,7 +255,6 @@ def test_email_ride_endpoint(tmp_path, monkeypatch):
         },
         directory=tmp_path,
     )
-    bridge = DaumBridge(Config())
     calls = {}
 
     def fake_email(ride, to=None):
@@ -313,8 +263,6 @@ def test_email_ride_endpoint(tmp_path, monkeypatch):
         return {"ok": True, "to": to or "me@example.com"}
 
     bridge.email_ride = fake_email
-    app = create_app(bridge)
-    client = TestClient(app)
 
     resp = client.post(f"/api/rides/{ride_id}/email", json={})
     assert resp.status_code == 200
@@ -327,10 +275,8 @@ def test_email_ride_endpoint(tmp_path, monkeypatch):
     assert calls["to"] == "other@example.com"
 
 
-def test_email_ride_endpoint_unknown_ride(tmp_path, monkeypatch):
+def test_email_ride_endpoint_unknown_ride(tmp_path, monkeypatch, client):
     monkeypatch.setenv("DAUM_RIDES_DIR", str(tmp_path))
-    app = create_app(DaumBridge(Config()))
-    client = TestClient(app)
     resp = client.post("/api/rides/does-not-exist/email")
     assert resp.status_code == 404
     assert resp.json()["ok"] is False
