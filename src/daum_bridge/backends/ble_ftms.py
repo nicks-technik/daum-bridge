@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
-from typing import Dict, List
+import time
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,36 @@ try:
 except Exception as e:
     log.debug("dbus-next not available: %s", e)
     DBUS_AVAILABLE = False
+
+    # Import-time fallbacks so the module (and its packet builders) can be used
+    # on platforms without dbus-next. The backend refuses to start in that case.
+    class ServiceInterface:  # type: ignore[no-redef]
+        def __init__(self, name: str = ""):
+            self.name = name
+
+    def method(*args, **kwargs):  # type: ignore[no-redef]
+        def decorator(func):
+            return func
+        return decorator
+
+    def dbus_property(*args, **kwargs):  # type: ignore[no-redef]
+        def decorator(func):
+            return func
+        return decorator
+
+    class Variant:  # type: ignore[no-redef]
+        def __init__(self, signature, value):
+            self.signature = signature
+            self.value = value
+
+    class BusType:  # type: ignore[no-redef]
+        SYSTEM = "system"
+
+    class MessageBus:  # type: ignore[no-redef]
+        @staticmethod
+        async def connect(*args, **kwargs):
+            raise RuntimeError("dbus-next is not available")
+
 
 
 # FTMS UUIDs (standard)
@@ -42,6 +73,93 @@ GATT_CHARACTERISTIC_USER_DESC_UUID = '00002901-0000-1000-8000-00805f9b34fb'
 GATT_CLIENT_CHAR_CFG_UUID = '00002902-0000-1000-8000-00805f9b34fb'
 
 
+# Fitness Machine Features (0x2AD8, first 32-bit field): cadence, total
+# distance, heart rate, elapsed time and power are provided.
+FEATURE_FLAGS = (1 << 1) | (1 << 2) | (1 << 10) | (1 << 12) | (1 << 14)
+# Target Setting Features (second 32-bit field): resistance, target power and
+# indoor bike simulation parameters (grade) are supported.
+TARGET_FEATURE_FLAGS = (1 << 2) | (1 << 3) | (1 << 13)
+
+# Indoor Bike Data flags. The order of the fields below follows the bit order,
+# as required by the FTMS specification: instantaneous speed, instantaneous
+# cadence, instantaneous power, total distance, elapsed time.
+INDOOR_BIKE_DATA_FLAGS = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 9) | (1 << 12)
+
+#: Cycling Power Measurement flag: crank revolution data present.
+CYCLING_POWER_CRANK_FLAG = 0x0020
+
+# Fitness Machine Control Point opcodes.
+OP_REQUEST_CONTROL = 0x00
+OP_RESET = 0x01
+OP_SET_RESISTANCE = 0x04
+OP_SET_TARGET_POWER = 0x05
+OP_START_RESUME = 0x07
+OP_STOP_PAUSE = 0x08
+OP_SET_SIMULATION = 0x11
+
+# Control Point response codes (the response always starts with 0x80).
+CP_SUCCESS = 0x01
+CP_NOT_SUPPORTED = 0x02
+CP_INVALID_PARAMETER = 0x03
+CP_OPERATION_FAILED = 0x04
+CP_CONTROL_NOT_PERMITTED = 0x05
+
+# Fitness Machine Status opcodes.
+STATUS_RESET = 0x01
+STATUS_STOPPED_BY_USER = 0x02
+STATUS_STARTED_BY_USER = 0x04
+STATUS_RESISTANCE_CHANGED = 0x07
+STATUS_TARGET_POWER_CHANGED = 0x08
+STATUS_SIMULATION_CHANGED = 0x12
+
+
+def _num(value, default: float = 0.0) -> float:
+    """Best-effort float conversion for values coming from the serial state."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_u16(value: float) -> int:
+    return max(0, min(0xFFFF, int(value)))
+
+
+def build_indoor_bike_data(state) -> bytes:
+    """Encode an FTMS Indoor Bike Data notification for ``state``.
+
+    Fields (in this order, matching :data:`INDOOR_BIKE_DATA_FLAGS`):
+    instantaneous speed (0.01 km/h), instantaneous cadence (0.5 rpm),
+    instantaneous power (W), total distance (m), elapsed time (s).
+    """
+    speed = _clamp_u16(_num(getattr(state, "speed", 0)) * 100.0)
+    cadence = _clamp_u16(_num(getattr(state, "cadence", 0)) * 2.0)
+    power = max(-32768, min(32767, int(_num(getattr(state, "power", 0)))))
+    distance = max(0, min(0xFFFFFF, int(_num(getattr(state, "total_distance", 0)) * 1000.0)))
+    elapsed = _clamp_u16(_num(getattr(state, "elapsed_time", 0)))
+    return (
+        struct.pack("<HHHh", INDOOR_BIKE_DATA_FLAGS, speed, cadence, power)
+        + distance.to_bytes(3, "little")
+        + struct.pack("<H", elapsed)
+    )
+
+
+def build_cycling_power(state, now: Optional[float] = None) -> bytes:
+    """Encode a Cycling Power Measurement notification (power + crank data)."""
+    power = max(-32768, min(32767, int(_num(getattr(state, "power", 0)))))
+    cadence = max(0.0, _num(getattr(state, "cadence", 0)))
+    now = time.time() if now is None else float(now)
+    if cadence > 0:
+        revolutions = int(now * cadence / 60.0) & 0xFFFF
+        event_time = int((now % 1.0) * 1024.0 * 60.0 / cadence) & 0xFFFF
+    else:
+        revolutions = event_time = 0
+    return struct.pack(
+        "<HhHH", CYCLING_POWER_CRANK_FLAG, power, revolutions, event_time
+    )
+
+
+
 class Advertisement(ServiceInterface):
     def __init__(self, object_path, device_name):
         super().__init__('org.bluez.LEAdvertisement1')
@@ -58,7 +176,8 @@ class Advertisement(ServiceInterface):
 
     @dbus_property()
     def ServiceUUIDs(self) -> 'as':
-        return [FTMS_UUID]
+        # Advertise the services clients need to discover in one go.
+        return [FTMS_UUID, HEART_RATE_SERVICE_UUID, CYCLING_POWER_SERVICE_UUID]
 
     @dbus_property()
     def Includes(self) -> 'as':
@@ -184,6 +303,42 @@ class Characteristic(ServiceInterface):
             return False
 
 
+class CCCD(ServiceInterface):
+    """Client Characteristic Configuration Descriptor (0x2902).
+
+    BlueZ expects a CCCD for every notify/indicate characteristic so a client
+    can enable notifications. The value is only used for reads; the actual
+    subscription state is tracked by :class:`Characteristic`.
+    """
+
+    def __init__(self, object_path: str, characteristic_path: str):
+        super().__init__('org.bluez.GattDescriptor1')
+        self.path = object_path
+        self.uuid = '00002902-0000-1000-8000-00805f9b34fb'
+        self.characteristic_path = characteristic_path
+        self.value = [0x00, 0x00]
+
+    @dbus_property()
+    def UUID(self) -> 's':
+        return self.uuid
+
+    @dbus_property()
+    def Characteristic(self) -> 'o':
+        return self.characteristic_path
+
+    @dbus_property()
+    def Value(self) -> 'ay':
+        return self.value
+
+    @method()
+    def ReadValue(self, options: 'a{sv}') -> 'ay':
+        return self.value
+
+    @method()
+    def WriteValue(self, value: 'ay', options: 'a{sv}'):
+        self.value = value
+
+
 class BLEFTMSBackend:
     def __init__(self, bridge, config):
         self.bridge = bridge
@@ -209,7 +364,7 @@ class BLEFTMSBackend:
         self.virtual_shifting_enabled = True
         self._adapter_watch_task = None
 
-    async def start(self):
+    async def start(self) -> bool:
         log.info("Starting BLE FTMS backend on %s as %s", self._adapter, self._device_name)
         self._running = True
         if self.bridge:
@@ -220,12 +375,9 @@ class BLEFTMSBackend:
 
         if not DBUS_AVAILABLE:
             log.warning("dbus-next not available; BLE FTMS peripheral cannot run on this platform")
-            try:
-                while self._running:
-                    await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                pass
-            return
+            log.warning("BLE FTMS requires Linux, BlueZ and Python 3.10-3.12 (dbus-next)")
+            self._running = False
+            return False
 
         try:
             self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
@@ -233,12 +385,8 @@ class BLEFTMSBackend:
         except Exception as e:
             log.error("Failed to connect to system D-Bus: %s", e)
             log.warning("BLE FTMS peripheral requires BlueZ on Linux with system D-Bus access")
-            try:
-                while self._running:
-                    await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                pass
-            return
+            self._running = False
+            return False
 
         try:
             await self._setup_gatt()
@@ -274,30 +422,50 @@ class BLEFTMSBackend:
                     self._bus.disconnect()
                 except Exception:
                     pass
+        return True
 
     async def _watch_adapter(self):
+        was_powered = True
         while self._running:
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass
+            if not self._bus or not DBUS_AVAILABLE:
+                continue
+            was_powered = await self._check_adapter_state(was_powered)
+
+    async def _check_adapter_state(self, was_powered: bool) -> bool:
+        """Poll adapter power and re-register GATT after a power cycle."""
+        try:
+            powered = await self._adapter_is_powered()
+        except Exception as exc:
+            log.debug("Could not query adapter power: %s", exc)
+            return was_powered
+        if not powered:
+            if was_powered:
+                log.warning("Bluetooth adapter %s is powered off", self._adapter)
+            return False
+        if not was_powered and self._bus is not None:
+            # After a power cycle BlueZ drops the advertisement and possibly
+            # the GATT application; re-register both (errors are harmless if
+            # BlueZ still has them).
+            log.info("Bluetooth adapter %s is powered on again, re-registering GATT", self._adapter)
             try:
-                if not self._bus or not DBUS_AVAILABLE:
-                    continue
-                # Check if we need to re-register
-                try:
-                    introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
-                    proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
-                    adapter = proxy_obj.get_interface('org.bluez.Adapter1')
-                    powered = await adapter.get_powered()
-                    if not powered:
-                        log.warning("BLE adapter not powered")
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                await self._register_gatt_application()
+            except Exception as e:
+                log.debug("GATT application re-register failed: %s", e)
+            try:
+                await self._register_advertisement()
+            except Exception as e:
+                log.debug("Advertisement re-register failed: %s", e)
+        return True
+
+    async def _adapter_is_powered(self) -> bool:
+        introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
+        proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
+        adapter = proxy_obj.get_interface('org.bluez.Adapter1')
+        return bool(await adapter.get_powered())
 
     async def _setup_gatt(self):
         # Create application
@@ -313,11 +481,7 @@ class BLEFTMSBackend:
         # Fitness Machine Feature (read)
         feature_path = f'{ftms_service_path}/char0'
         feature_char = Characteristic(feature_path, FITNESS_MACHINE_FEATURE_UUID, ['read'], ftms_service_path, bus=self._bus, backend=self)
-        fitness_machine_features = 0x00000000
-        target_setting_features = 0x00000000
-        fitness_machine_features |= (1 << 1) | (1 << 10) | (1 << 14)
-        target_setting_features |= (1 << 1) | (1 << 2)
-        features = struct.pack('<II', fitness_machine_features, target_setting_features)
+        features = struct.pack('<II', FEATURE_FLAGS, TARGET_FEATURE_FLAGS)
         feature_char.value = list(features)
         self._bus.export(feature_path, feature_char)
         self._objects.append(feature_char)
@@ -328,64 +492,16 @@ class BLEFTMSBackend:
         self._indoor_bike_data_char = ibd_char
         self._bus.export(ibd_path, ibd_char)
         self._objects.append(ibd_char)
-        try:
-            cccd_ibd_path = f'{ibd_path}/desc0'
-            class CCCD2(ServiceInterface):
-                def __init__(self, opath, cpath):
-                    super().__init__('org.bluez.GattDescriptor1')
-                    self.path = opath
-                    self.uuid = '00002902-0000-1000-8000-00805f9b34fb'
-                    self.cpath = cpath
-                    self.value = [0x00, 0x00]
-                @dbus_property()
-                def UUID(self): return self.uuid
-                @dbus_property()
-                def Characteristic(self): return self.cpath
-                @dbus_property()
-                def Value(self): return self.value
-                @method()
-                def ReadValue(self, options): return self.value
-                @method()
-                def WriteValue(self, value, options):
-                    self.value = value
-            c2 = CCCD2(cccd_ibd_path, ibd_path)
-            self._bus.export(cccd_ibd_path, c2)
-            self._objects.append(c2)
-        except Exception:
-            pass
-        
+        self._export_cccd(ibd_path)
+
         # Fitness Machine Status (notify)
         status_path = f'{ftms_service_path}/char2'
         status_char = Characteristic(status_path, FITNESS_MACHINE_STATUS_UUID, ['notify'], ftms_service_path, bus=self._bus, backend=self)
         self._fitness_machine_status_char = status_char
         self._bus.export(status_path, status_char)
         self._objects.append(status_char)
-        try:
-            cccd_st_path = f'{status_path}/desc0'
-            class CCCD3(ServiceInterface):
-                def __init__(self, opath, cpath):
-                    super().__init__('org.bluez.GattDescriptor1')
-                    self.path = opath
-                    self.uuid = '00002902-0000-1000-8000-00805f9b34fb'
-                    self.cpath = cpath
-                    self.value = [0x00, 0x00]
-                @dbus_property()
-                def UUID(self): return self.uuid
-                @dbus_property()
-                def Characteristic(self): return self.cpath
-                @dbus_property()
-                def Value(self): return self.value
-                @method()
-                def ReadValue(self, options): return self.value
-                @method()
-                def WriteValue(self, value, options):
-                    self.value = value
-            c3 = CCCD3(cccd_st_path, status_path)
-            self._bus.export(cccd_st_path, c3)
-            self._objects.append(c3)
-        except Exception:
-            pass
-        
+        self._export_cccd(status_path)
+
         # Fitness Machine Control Point (write, indicate)
         cp_path = f'{ftms_service_path}/char3'
         cp_char = Characteristic(cp_path, FITNESS_MACHINE_CONTROL_POINT_UUID, ['write', 'indicate'], ftms_service_path, bus=self._bus, backend=self)
@@ -393,34 +509,7 @@ class BLEFTMSBackend:
         self._control_point_char = cp_char
         self._bus.export(cp_path, cp_char)
         self._objects.append(cp_char)
-        
-        # CCCD for Control Point
-        try:
-            cccd_cp_path = f'{cp_path}/desc0'
-            from dbus_next.service import ServiceInterface as SI
-            class CCCD(SI):
-                def __init__(self, opath, cpath):
-                    super().__init__('org.bluez.GattDescriptor1')
-                    self.path = opath
-                    self.uuid = '00002902-0000-1000-8000-00805f9b34fb'
-                    self.cpath = cpath
-                    self.value = [0x00, 0x00]
-                @dbus_property()
-                def UUID(self): return self.uuid
-                @dbus_property()
-                def Characteristic(self): return self.cpath
-                @dbus_property()
-                def Value(self): return self.value
-                @method()
-                def ReadValue(self, options): return self.value
-                @method()
-                def WriteValue(self, value, options):
-                    self.value = value
-            cccd_cp = CCCD(cccd_cp_path, cp_path)
-            self._bus.export(cccd_cp_path, cccd_cp)
-            self._objects.append(cccd_cp)
-        except Exception as e:
-            log.debug(f"CCCD CP error: {e}")
+        self._export_cccd(cp_path)
         
         # Supported Power Range (0x2AD6)
         try:
@@ -436,7 +525,7 @@ class BLEFTMSBackend:
         try:
             srl_path = f'{ftms_service_path}/char5'
             srl_char = Characteristic(srl_path, SUPPORTED_RESISTANCE_LEVEL_RANGE_UUID, ['read'], ftms_service_path, bus=self._bus, backend=self)
-            srl_char.value = list(struct.pack('<hhh', 0, 100, 1))
+            srl_char.value = list(struct.pack('<hhh', 0, 1000, 1))
             self._bus.export(srl_path, srl_char)
             self._objects.append(srl_char)
         except Exception as e:
@@ -453,6 +542,7 @@ class BLEFTMSBackend:
             self._heart_rate_char = hrm_char
             self._bus.export(hrm_path, hrm_char)
             self._objects.append(hrm_char)
+            self._export_cccd(hrm_path)
             bsl_path = f'{hrs_service_path}/char1'
             bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus, backend=self)
             bsl_char.value = [0x01]
@@ -477,6 +567,7 @@ class BLEFTMSBackend:
             self._cycling_power_char = cpm_char
             self._bus.export(cpm_path, cpm_char)
             self._objects.append(cpm_char)
+            self._export_cccd(cpm_path)
         except Exception as e:
             log.debug(f"CPS setup error: {e}")
         
@@ -500,6 +591,20 @@ class BLEFTMSBackend:
             log.debug(f"DIS setup error: {e}")
         
         # Register application
+        await self._register_gatt_application()
+
+    def _export_cccd(self, characteristic_path: str) -> None:
+        """Export the CCCD descriptor (0x2902) for a notify/indicate characteristic."""
+        cccd_path = f'{characteristic_path}/desc0'
+        descriptor = CCCD(cccd_path, characteristic_path)
+        try:
+            self._bus.export(cccd_path, descriptor)
+        except Exception as e:
+            log.debug("CCCD export error for %s: %s", characteristic_path, e)
+            return
+        self._objects.append(descriptor)
+
+    async def _register_gatt_application(self):
         try:
             introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
             proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
@@ -511,16 +616,13 @@ class BLEFTMSBackend:
             raise
 
     async def _register_advertisement(self):
-        self._advertisement = Advertisement(self._adv_path, self._device_name)
-        self._bus.export(self._adv_path, self._advertisement)
+        if self._advertisement is None:
+            self._advertisement = Advertisement(self._adv_path, self._device_name)
+            self._bus.export(self._adv_path, self._advertisement)
         try:
             introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
             proxy_obj = self._bus.get_proxy_object('org.bluez', f'/org/bluez/{self._adapter}', introspection)
             adv_manager = proxy_obj.get_interface('org.bluez.LEAdvertisingManager1')
-            try:
-                self._advertisement.ServiceUUIDs = [FTMS_UUID, HEART_RATE_SERVICE_UUID, CYCLING_POWER_SERVICE_UUID]
-            except Exception:
-                pass
             await adv_manager.call_register_advertisement(self._adv_path, {})
             log.info("LE Advertisement registered")
         except Exception as e:
@@ -528,26 +630,38 @@ class BLEFTMSBackend:
             raise
 
     def _handle_control_point(self, data: bytes):
+        """Handle a Fitness Machine Control Point write.
+
+        Opcodes implemented: Request Control (0x00), Reset (0x01),
+        Set Resistance Level (0x04), Set Target Power (0x05),
+        Start/Resume (0x07), Stop/Pause (0x08) and Set Indoor Bike Simulation
+        Parameters (0x11). Resistance and grade are translated to Daum gears
+        by :class:`~daum_bridge.bridge.DaumBridge`.
+        """
         try:
-            if not data:
+            raw = bytes(data or b"")
+            if not raw:
                 return
-            op_code = data[0]
+            op_code = raw[0]
             self._last_cp_req = op_code
-            log.info(f"Control Point op: 0x{op_code:02X} data={data.hex()}")
+            log.info("Control Point op: 0x%02X data=%s", op_code, raw.hex())
             if self.bridge and hasattr(self.bridge, '_app_connected'):
                 self.bridge._app_connected = True
             if self.bridge and hasattr(self.bridge, '_client_connected'):
                 self.bridge._client_connected = True
+
             # Request Control (0x00)
-            if op_code == 0x00:
+            if op_code == OP_REQUEST_CONTROL:
                 self._control_point_enabled = True
                 if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
                     self.bridge._erg_control_granted = True
-                self._send_cp_response(0x00, 0x01, 0x00)
-                self._send_fitness_machine_status(0x01)
+                if self.bridge and hasattr(self.bridge, '_app_connected_time'):
+                    self.bridge._app_connected_time = time.time()
+                self._send_cp_response(OP_REQUEST_CONTROL, CP_SUCCESS)
                 return
+
             # Reset (0x01)
-            elif op_code == 0x01:
+            if op_code == OP_RESET:
                 self._control_point_enabled = False
                 if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
                     self.bridge._erg_control_granted = False
@@ -556,110 +670,140 @@ class BLEFTMSBackend:
                         self.bridge.set_target_watt(0)
                     except Exception:
                         pass
-                self._send_cp_response(0x01, 0x01, 0x00)
-                self._send_fitness_machine_status(0x02)
+                self._send_cp_response(OP_RESET, CP_SUCCESS)
+                self._send_fitness_machine_status(STATUS_RESET)
                 return
+
             # Start or Resume (0x07)
-            elif op_code == 0x07:
-                if not self._control_point_enabled:
-                    self._send_cp_response(0x07, 0x02, 0x02)
+            if op_code == OP_START_RESUME:
+                if not self._require_control(op_code):
                     return
-                self._send_cp_response(0x07, 0x01, 0x00)
-                self._send_fitness_machine_status(0x01)
+                self._send_cp_response(OP_START_RESUME, CP_SUCCESS)
+                self._send_fitness_machine_status(STATUS_STARTED_BY_USER)
                 return
+
             # Stop or Pause (0x08)
-            elif op_code == 0x08:
-                if not self._control_point_enabled:
-                    self._send_cp_response(0x08, 0x02, 0x02)
+            if op_code == OP_STOP_PAUSE:
+                if not self._require_control(op_code):
                     return
-                self._send_cp_response(0x08, 0x01, 0x00)
-                self._send_fitness_machine_status(0x04)
+                self._send_cp_response(OP_STOP_PAUSE, CP_SUCCESS)
+                self._send_fitness_machine_status(STATUS_STOPPED_BY_USER)
                 return
-            # Set Target Power (0x05)
-            elif op_code == 0x05 and len(data) >= 3:
-                if not self._control_point_enabled:
-                    self._send_cp_response(0x05, 0x02, 0x02)
+
+            # Set Target Power (0x05), sint16 in watts
+            if op_code == OP_SET_TARGET_POWER:
+                if not self._require_control(op_code):
+                    return
+                if len(raw) < 3:
+                    self._send_cp_response(op_code, CP_INVALID_PARAMETER, 0x01)
+                    return
+                power = struct.unpack_from('<h', raw, 1)[0]
+                power_clamped = max(10, min(800, int(power)))
+                log.info("FTMS set target power: %sW (clamped to %sW)", power, power_clamped)
+                if not hasattr(self.bridge, "set_target_watt"):
+                    self._send_cp_response(op_code, CP_NOT_SUPPORTED)
                     return
                 try:
-                    power = struct.unpack('<h', data[1:3])[0]
-                except Exception:
-                    self._send_cp_response(0x05, 0x03, 0x01)
+                    self.bridge.set_target_watt(power_clamped)
+                    if hasattr(self.bridge, '_erg_control_granted'):
+                        self.bridge._erg_control_granted = True
+                except Exception as e:
+                    log.warning("Error setting target power: %s", e)
+                    self._send_cp_response(op_code, CP_OPERATION_FAILED)
                     return
-                power_clamped = max(10, min(800, int(power)))
-                log.info(f"FTMS set target power: {power}W (clamped to {power_clamped}W)")
-                if self.bridge and hasattr(self.bridge, 'set_target_watt'):
-                    try:
-                        self.bridge.set_target_watt(power_clamped)
-                        if hasattr(self.bridge, '_erg_control_granted'):
-                            self.bridge._erg_control_granted = True
-                    except Exception as e:
-                        log.debug(f"Error setting power: {e}")
-                self._send_cp_response(0x05, 0x01, 0x00)
-                self._send_fitness_machine_status(0x07)
+                self._send_cp_response(op_code, CP_SUCCESS)
+                self._send_fitness_machine_status(STATUS_TARGET_POWER_CHANGED)
                 return
+
+            # Set Resistance Level (0x04), sint16 in 0.1 % units
+            if op_code == OP_SET_RESISTANCE:
+                if not self._require_control(op_code):
+                    return
+                if len(raw) < 3:
+                    self._send_cp_response(op_code, CP_INVALID_PARAMETER, 0x01)
+                    return
+                (raw_level,) = struct.unpack_from('<h', raw, 1)
+                percent = max(0.0, min(100.0, raw_level / 10.0))
+                if not hasattr(self.bridge, "set_resistance_percent"):
+                    self._send_cp_response(op_code, CP_NOT_SUPPORTED)
+                    return
+                log.info("FTMS set resistance: %.1f %%", percent)
+                try:
+                    self.bridge.set_resistance_percent(percent)
+                except Exception as e:
+                    log.warning("Error setting resistance: %s", e)
+                    self._send_cp_response(op_code, CP_OPERATION_FAILED)
+                    return
+                self._send_cp_response(op_code, CP_SUCCESS)
+                self._send_fitness_machine_status(STATUS_RESISTANCE_CHANGED)
+                return
+
             # Set Indoor Bike Simulation Parameters (0x11)
-            elif op_code == 0x11 and len(data) >= 7:
-                if not self._control_point_enabled:
-                    self._send_cp_response(0x11, 0x02, 0x02)
+            #   wind speed (0.001 m/s), grade (0.01 %), crr, wind resistance
+            if op_code == OP_SET_SIMULATION:
+                if not self._require_control(op_code):
                     return
-                # Basic SIM support - acknowledge
-                self._send_cp_response(0x11, 0x01, 0x00)
-                self._send_fitness_machine_status(0x14)  # Simulation parameters changed if available
-                return
-            # Set Resistance Level (0x04)
-            elif op_code == 0x04 and len(data) >= 3:
-                if not self._control_point_enabled:
-                    self._send_cp_response(0x04, 0x02, 0x02)
+                if len(raw) < 7:
+                    self._send_cp_response(op_code, CP_INVALID_PARAMETER, 0x01)
                     return
-                self._send_cp_response(0x04, 0x01, 0x00)
+                wind_speed, grade_raw, _crr, _wind_res = struct.unpack_from('<hhBB', raw, 1)
+                grade = max(-25.0, min(25.0, grade_raw / 100.0))
+                if not hasattr(self.bridge, "set_grade_percent"):
+                    self._send_cp_response(op_code, CP_NOT_SUPPORTED)
+                    return
+                log.info(
+                    "FTMS simulation: grade %.2f %%, wind %.3f m/s (wind ignored)",
+                    grade,
+                    wind_speed / 1000.0,
+                )
+                try:
+                    self.bridge.set_grade_percent(grade)
+                except Exception as e:
+                    log.warning("Error setting simulation parameters: %s", e)
+                    self._send_cp_response(op_code, CP_OPERATION_FAILED)
+                    return
+                self._send_cp_response(op_code, CP_SUCCESS)
+                self._send_fitness_machine_status(STATUS_SIMULATION_CHANGED)
                 return
-            else:
-                self._send_cp_response(op_code, 0x02, 0x07)
+
+            self._send_cp_response(op_code, CP_NOT_SUPPORTED)
         except Exception as e:
-            log.error(f"Control point error: {e}")
+            log.error("Control point error: %s", e)
+
+    def _require_control(self, op_code: int) -> bool:
+        if self._control_point_enabled:
+            return True
+        self._send_cp_response(op_code, CP_CONTROL_NOT_PERMITTED)
+        return False
+
+    def _notify_char(self, char, packet: bytes):
+        """Store a notification value and emit it when a loop is running."""
+        if char is None:
+            return
+        try:
+            char.value = list(packet)
+        except Exception:
+            pass
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        try:
+            loop.create_task(char.send_notification(bytes(packet)))
+        except Exception as e:
+            log.debug("Notification scheduling error: %s", e)
 
     def _send_cp_response(self, request_op, result_code, error_code=0x00):
-        try:
-            if not self._control_point_char:
-                return
-            resp = bytearray([0x80, request_op & 0xFF, result_code & 0xFF])
-            if result_code != 0x01:
-                if result_code == 0x03 and error_code == 0x00:
-                    resp.append(error_code)
-                elif error_code != 0x00:
-                    resp.append(error_code)
-            self._control_point_char.value = list(resp)
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(self._control_point_char.send_notification(bytes(resp)))
-            except Exception:
-                pass
-            if self.bridge and hasattr(self.bridge, '_app_connected'):
-                self.bridge._app_connected = True
-            if self.bridge and hasattr(self.bridge, '_client_connected'):
-                self.bridge._client_connected = True
-            log.debug(f"CP response: {bytes(resp).hex()}")
-        except Exception as e:
-            log.debug(f"CP response error: {e}")
+        resp = bytearray([0x80, request_op & 0xFF, result_code & 0xFF])
+        if result_code == CP_INVALID_PARAMETER:
+            resp.append(error_code or 0x01)
+        self._notify_char(self._control_point_char, bytes(resp))
+        log.debug("CP response: %s", bytes(resp).hex())
 
     def _send_fitness_machine_status(self, status: int, data: bytes = b''):
-        try:
-            if not self._fitness_machine_status_char:
-                return
-            packet = bytearray([status & 0xFF]) + bytearray(data)
-            self._fitness_machine_status_char.value = list(packet)
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(self._fitness_machine_status_char.send_notification(bytes(packet)))
-            except Exception:
-                pass
-            log.debug(f"FTMS status: 0x{status:02X}")
-        except Exception as e:
-            log.debug(f"Status send error: {e}")
+        packet = bytes([status & 0xFF]) + bytes(data)
+        self._notify_char(self._fitness_machine_status_char, packet)
+        log.debug("FTMS status: 0x%02X", status)
 
     async def _notify_loop(self):
         while self._running:
@@ -668,52 +812,10 @@ class BLEFTMSBackend:
                     state = self.bridge.state
                     # Indoor Bike Data
                     if self._indoor_bike_data_char:
-                        flags = 0x0057  # speed(0) + cadence(1) + distance(2) + elapsed time(3) + power(6)
-                        packet = bytearray()
-                        packet += struct.pack('<H', flags)
-                        if hasattr(state, 'speed') and state.speed is not None:
-                            try:
-                                speed = int(round(float(state.speed) * 100)) & 0xFFFF
-                            except Exception:
-                                speed = 0
-                        else:
-                            speed = 0
-                        packet += struct.pack('<H', speed)
-                        if hasattr(state, 'cadence') and state.cadence is not None:
-                            try:
-                                cadence = int(round(float(state.cadence) * 2)) & 0xFFFF
-                            except Exception:
-                                cadence = 0
-                        else:
-                            cadence = 0
-                        packet += struct.pack('<H', cadence)
-                        if hasattr(state, 'total_distance') and state.total_distance is not None:
-                            try:
-                                dist_m = int(float(state.total_distance) * 1000) & 0xFFFFFF
-                            except Exception:
-                                dist_m = 0
-                        else:
-                            dist_m = 0
-                        packet += bytes([dist_m & 0xFF, (dist_m >> 8) & 0xFF, (dist_m >> 16) & 0xFF])
-                        if hasattr(state, 'elapsed_time') and state.elapsed_time is not None:
-                            try:
-                                et = int(state.elapsed_time) & 0xFFFF
-                            except Exception:
-                                et = 0
-                        else:
-                            et = 0
-                        packet += struct.pack('<H', et)
-                        if hasattr(state, 'power') and state.power is not None:
-                            try:
-                                power = int(float(state.power))
-                            except Exception:
-                                power = 0
-                        else:
-                            power = 0
-                        packet += struct.pack('<h', power & 0xFFFF)
+                        packet = build_indoor_bike_data(state)
                         if self._indoor_bike_data_char.notifying or getattr(self._indoor_bike_data_char, 'indicating', False):
                             try:
-                                await self._indoor_bike_data_char.send_notification(bytes(packet))
+                                await self._indoor_bike_data_char.send_notification(packet)
                             except Exception:
                                 pass
                         else:
@@ -723,35 +825,20 @@ class BLEFTMSBackend:
                         try:
                             hr = int(state.heart_rate)
                             if 40 <= hr <= 220:
-                                hr_packet = bytearray([0x00, hr & 0xFF])
+                                hr_packet = bytes([0x00, hr & 0xFF])
                                 if self._heart_rate_char.notifying or getattr(self._heart_rate_char, 'indicating', False):
-                                    await self._heart_rate_char.send_notification(bytes(hr_packet))
+                                    await self._heart_rate_char.send_notification(hr_packet)
                                 else:
                                     self._heart_rate_char.value = list(hr_packet)
                         except Exception:
                             pass
-                    # Cycling Power (with optional crank data)
+                    # Cycling Power (with crank revolution data)
                     if self._cycling_power_char:
-                        try:
-                            pwr = int(getattr(state, 'power', 0) or 0)
-                            cad = int(getattr(state, 'cadence', 0) or 0)
-                            flags = 0x0020  # Crank Revolution Data
-                            cp_packet = bytearray([flags & 0xFF, (flags >> 8) & 0xFF])
-                            cp_packet += struct.pack('<h', pwr & 0xFFFF)
-                            # Crank revolutions (uint16) and crank event time (uint16, 1/1024s)
-                            if cad > 0:
-                                rev = int(time.time() * cad / 60) & 0xFFFF
-                                ctime = int((time.time() % 1) * 1024 * 60 / max(cad,1)) & 0xFFFF
-                            else:
-                                rev = 0
-                                ctime = 0
-                            cp_packet += struct.pack('<HH', rev, ctime)
-                            if self._cycling_power_char.notifying or getattr(self._cycling_power_char, 'indicating', False):
-                                await self._cycling_power_char.send_notification(bytes(cp_packet))
-                            else:
-                                self._cycling_power_char.value = list(cp_packet)
-                        except Exception:
-                            pass
+                        cp_packet = build_cycling_power(state)
+                        if self._cycling_power_char.notifying or getattr(self._cycling_power_char, 'indicating', False):
+                            await self._cycling_power_char.send_notification(cp_packet)
+                        else:
+                            self._cycling_power_char.value = list(cp_packet)
                     log.debug("FTMS IBP: speed=%s cadence=%s dist=%s power=%s hr=%s", getattr(state, 'speed', None), getattr(state, 'cadence', None), getattr(state, 'total_distance', None), getattr(state, 'power', None), getattr(state, 'heart_rate', None))
             except Exception as e:
                 log.debug("Notify loop error: %s", e)
