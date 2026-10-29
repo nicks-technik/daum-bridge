@@ -1,3 +1,17 @@
+"""Command line interface for the daum-bridge.
+
+Two groups of commands live here:
+
+* operational commands that a rider uses day to day (``run``, ``scan``,
+  ``calibrate``, ``inputs``);
+* maintenance commands that work on an already recorded ride (``strava-auth``,
+  ``strava-upload``, ``email-ride``, ``export-tcx``).
+
+The ride commands share one loading rule: ``--ride`` wins, otherwise the newest
+ride in the rides directory is used, and both failure cases exit with status 1.
+That rule lives in :func:`_load_ride` so the three commands cannot drift apart.
+"""
+
 from __future__ import annotations
 
 import json
@@ -36,6 +50,31 @@ def setup_logging(level: str = "INFO", log_file: str = None):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=handlers,
     )
+
+
+def _load_ride(ride: Optional[Path]) -> dict:
+    """Load a ride from ``--ride`` or fall back to the newest recorded one.
+
+    Shared by ``strava-upload``, ``email-ride`` and ``export-tcx``. Both failure
+    paths (unreadable file, no ride on disk) print an explanation and exit with
+    status 1, so a shell script can rely on the exit code instead of parsing
+    output.
+    """
+    from . import history
+
+    if ride:
+        try:
+            with Path(ride).open("r", encoding="utf-8") as f:
+                ride_data = json.load(f)
+        except (OSError, ValueError) as e:
+            console.print(f"[red]Could not read ride file {ride}: {e}[/red]")
+            raise typer.Exit(code=1)
+    else:
+        ride_data = history.latest_ride(include_samples=True)
+    if not ride_data:
+        console.print("[red]No recorded ride found in the rides directory.[/red]")
+        raise typer.Exit(code=1)
+    return ride_data
 
 
 @app.command()
@@ -196,22 +235,10 @@ def strava_upload(
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
 ):
     """Upload a recorded ride to Strava as a TCX activity."""
-    from . import history
     from .integrations.strava import StravaClient
 
     cfg = get_env_overrides(Config.load(config))
-    if ride:
-        try:
-            with Path(ride).open("r", encoding="utf-8") as f:
-                ride_data = json.load(f)
-        except (OSError, ValueError) as e:
-            console.print(f"[red]Could not read ride file {ride}: {e}[/red]")
-            raise typer.Exit(code=1)
-    else:
-        ride_data = history.latest_ride(include_samples=True)
-    if not ride_data:
-        console.print("[red]No recorded ride found in the rides directory.[/red]")
-        raise typer.Exit(code=1)
+    ride_data = _load_ride(ride)
 
     client = StravaClient.from_config(cfg.strava)
     if not client.is_configured():
@@ -251,22 +278,10 @@ def email_ride(
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
 ):
     """Email a recorded ride as a TCX attachment."""
-    from . import history
     from .integrations.emailer import send_ride_email
 
     cfg = get_env_overrides(Config.load(config))
-    if ride:
-        try:
-            with Path(ride).open("r", encoding="utf-8") as f:
-                ride_data = json.load(f)
-        except (OSError, ValueError) as e:
-            console.print(f"[red]Could not read ride file {ride}: {e}[/red]")
-            raise typer.Exit(code=1)
-    else:
-        ride_data = history.latest_ride(include_samples=True)
-    if not ride_data:
-        console.print("[red]No recorded ride found in the rides directory.[/red]")
-        raise typer.Exit(code=1)
+    ride_data = _load_ride(ride)
 
     if not cfg.email.is_configured():
         console.print(
@@ -296,18 +311,7 @@ def export_tcx(
     from . import history
     from .integrations.tcx import build_tcx
 
-    if ride:
-        try:
-            with Path(ride).open("r", encoding="utf-8") as f:
-                ride_data = json.load(f)
-        except (OSError, ValueError) as e:
-            console.print(f"[red]Could not read ride file {ride}: {e}[/red]")
-            raise typer.Exit(code=1)
-    else:
-        ride_data = history.latest_ride(include_samples=True)
-    if not ride_data:
-        console.print("[red]No recorded ride found in the rides directory.[/red]")
-        raise typer.Exit(code=1)
+    ride_data = _load_ride(ride)
 
     try:
         tcx = build_tcx(ride_data)
