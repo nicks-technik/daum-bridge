@@ -22,41 +22,17 @@ from __future__ import annotations
 import logging
 import smtplib
 import ssl
-import time
 from email.message import EmailMessage
 from typing import Optional
 
 from ..config import EmailConfig
+from ..formatting import format_datetime, format_duration
 from .tcx import build_tcx
 
 log = logging.getLogger(__name__)
 
 TCX_MEDIA_SUBTYPE = "vnd.garmin.tcx+xml"
 STRAVA_UPLOAD_URL = "https://www.strava.com/upload/select"
-
-
-def _fmt_date(ride: dict) -> str:
-    start = ride.get("start")
-    if not start:
-        return "unknown date"
-    try:
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(start)))
-    except (TypeError, ValueError, OSError):
-        return "unknown date"
-
-
-def _fmt_duration(seconds) -> str:
-    try:
-        total = max(0, int(float(seconds or 0)))
-    except (TypeError, ValueError):
-        total = 0
-    hours, rest = divmod(total, 3600)
-    minutes, secs = divmod(rest, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m"
-    if minutes:
-        return f"{minutes}m {secs:02d}s"
-    return f"{secs}s"
 
 
 def _recipients(cfg: EmailConfig, to: Optional[str] = None) -> list[str]:
@@ -73,7 +49,7 @@ def build_ride_message(
 ) -> EmailMessage:
     """Build the TCX email for ``ride`` (without sending it)."""
     ride_id = str(ride.get("id") or "ride")
-    date = _fmt_date(ride)
+    date = format_datetime(ride.get("start"), "unknown date")
     recipients = _recipients(cfg, to)
     if not recipients:
         raise ValueError("No email recipient configured (email.to_addr or DAUM_EMAIL_TO)")
@@ -85,7 +61,7 @@ def build_ride_message(
     body = (
         "Hi,\n\n"
         f"your training on {date} is attached as a TCX file.\n\n"
-        f"Duration:      {_fmt_duration(ride.get('duration'))}\n"
+        f"Duration:      {format_duration(ride.get('duration'))}\n"
         f"Distance:      {float(ride.get('distance') or 0):.2f} km\n"
         f"Average power: {float(ride.get('avg_power') or 0):.0f} W\n"
         f"Max power:     {float(ride.get('max_power') or 0):.0f} W\n"

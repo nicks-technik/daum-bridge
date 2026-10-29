@@ -16,6 +16,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from ..numbers import as_float
+
 log = logging.getLogger(__name__)
 
 TCX_NS = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
@@ -35,15 +37,6 @@ def _fmt_time(timestamp: float) -> str:
     )
 
 
-def _num(value: Any, default: float = 0.0) -> float:
-    try:
-        if value is None:
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _element(parent: ET.Element, tag: str, text: Any = None, ns: str = TCX_NS) -> ET.Element:
     el = ET.SubElement(parent, f"{{{ns}}}{tag}")
     if text is not None:
@@ -55,15 +48,15 @@ def _normalize_samples(ride: dict, samples: Optional[Iterable[dict]]) -> list[di
     """Return samples sorted by elapsed time with numeric, validated fields."""
     if samples is None:
         samples = ride.get("samples") or []
-    ride_start = _num(ride.get("start"), time.time())
+    ride_start = as_float(ride.get("start"), time.time())
     points: list[dict] = []
     for sample in samples:
         if not isinstance(sample, dict):
             continue
         if sample.get("t") is not None:
-            t = _num(sample.get("t"), -1.0)
+            t = as_float(sample.get("t"), -1.0)
         elif sample.get("timestamp") is not None:
-            t = _num(sample.get("timestamp")) - ride_start
+            t = as_float(sample.get("timestamp")) - ride_start
         else:
             continue
         if t < 0:
@@ -72,9 +65,9 @@ def _normalize_samples(ride: dict, samples: Optional[Iterable[dict]]) -> list[di
         for key in ("power", "cadence", "speed", "heart_rate"):
             value = sample.get(key)
             if value is not None:
-                point[key] = _num(value)
+                point[key] = as_float(value)
         if sample.get("distance") is not None:
-            point["distance"] = _num(sample.get("distance"))  # km, cumulative
+            point["distance"] = as_float(sample.get("distance"))  # km, cumulative
         points.append(point)
     points.sort(key=lambda p: p["t"])
     return points
@@ -82,22 +75,22 @@ def _normalize_samples(ride: dict, samples: Optional[Iterable[dict]]) -> list[di
 
 def _fallback_samples(ride: dict) -> list[dict]:
     """Synthesize start/end points when no samples were recorded."""
-    duration = max(0.0, _num(ride.get("duration")))
+    duration = max(0.0, as_float(ride.get("duration")))
     point = {
-        "power": _num(ride.get("avg_power")),
-        "cadence": _num(ride.get("avg_cadence")),
-        "heart_rate": _num(ride.get("avg_heart_rate")),
+        "power": as_float(ride.get("avg_power")),
+        "cadence": as_float(ride.get("avg_cadence")),
+        "heart_rate": as_float(ride.get("avg_heart_rate")),
         "speed": 0.0,
         "distance": 0.0,
     }
     end = dict(point)
-    end["distance"] = _num(ride.get("distance"))
+    end["distance"] = as_float(ride.get("distance"))
     return [dict(point, t=0.0), dict(end, t=duration)]
 
 
 def _trackpoints(ride: dict, points: list[dict]) -> list[dict]:
     """Attach absolute times and cumulative distance (meters) to points."""
-    ride_start = _num(ride.get("start"), time.time())
+    ride_start = as_float(ride.get("start"), time.time())
     start_time = ride_start or time.time()
     track: list[dict] = []
     distance_m = 0.0
@@ -137,22 +130,22 @@ def build_tcx(ride: dict, samples: Optional[Iterable[dict]] = None) -> str:
         points = _fallback_samples(ride)
     track = _trackpoints(ride, points)
 
-    start = _num(ride.get("start"), time.time())
-    duration = max(_num(ride.get("duration")), track[-1]["elapsed"] if track else 0.0)
-    total_distance_m = track[-1]["distance_m"] if track else _num(ride.get("distance")) * 1000.0
+    start = as_float(ride.get("start"), time.time())
+    duration = max(as_float(ride.get("duration")), track[-1]["elapsed"] if track else 0.0)
+    total_distance_m = track[-1]["distance_m"] if track else as_float(ride.get("distance")) * 1000.0
 
     powers = [p["power"] for p in track if "power" in p]
     heart_rates = [p["heart_rate"] for p in track if p.get("heart_rate", 0) > 0]
     cadences = [p["cadence"] for p in track if p.get("cadence", 0) > 0]
     speeds = [p["speed"] for p in track if p.get("speed", 0) > 0]
 
-    avg_power = _num(ride.get("avg_power"), _avg(powers))
-    max_power = _num(ride.get("max_power"), max(powers) if powers else 0.0)
-    avg_hr = _num(ride.get("avg_heart_rate"), _avg(heart_rates))
-    max_hr = _num(ride.get("max_heart_rate"), max(heart_rates) if heart_rates else 0.0)
-    avg_cadence = _num(ride.get("avg_cadence"), _avg(cadences))
+    avg_power = as_float(ride.get("avg_power"), _avg(powers))
+    max_power = as_float(ride.get("max_power"), max(powers) if powers else 0.0)
+    avg_hr = as_float(ride.get("avg_heart_rate"), _avg(heart_rates))
+    max_hr = as_float(ride.get("max_heart_rate"), max(heart_rates) if heart_rates else 0.0)
+    avg_cadence = as_float(ride.get("avg_cadence"), _avg(cadences))
     max_speed_ms = max(speeds) / 3.6 if speeds else 0.0
-    work_kj = _num(ride.get("work_kj"))
+    work_kj = as_float(ride.get("work_kj"))
 
     root = ET.Element(f"{{{TCX_NS}}}TrainingCenterDatabase")
     activities = _element(root, "Activities")
