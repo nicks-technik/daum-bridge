@@ -15,9 +15,15 @@
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; }
         th { color: #94a3b8; font-weight: 600; }
-        .stat { display: inline-block; margin-right: 20px; }
-        .stat-label { color: #94a3b8; font-size: 12px; }
-        .stat-value { font-size: 18px; font-weight: 600; }
+        .btn { padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        a.btn { display: inline-block; text-decoration: none; line-height: 1.3; }
+        .btn[disabled] { background: #475569; cursor: not-allowed; }
+        .btn-strava { background: #fc4c02; }
+        .btn-download { background: #334155; border: 1px solid #475569; }
+        .btn-email { background: #0ea5e9; }
+        .btn-email[disabled] { background: #475569; }
+        .muted { color: #94a3b8; font-size: 13px; }
+        .status { margin-left: 12px; font-size: 13px; color: #94a3b8; }
     </style>
 </head>
 <body>
@@ -27,15 +33,25 @@
     <div class="container">
         <div class="nav">
             <a href="/">← Dashboard</a>
+            <a href="/downloads">Downloads</a>
             <a href="/logs">Logs</a>
             <a href="/config">Config</a>
         </div>
-        <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
-            <h2 style="margin: 0;">Recent Rides</h2>
-            <button onclick="syncStrava()" style="padding: 8px 16px; background: #fc4c02; color: white; border: none; border-radius: 6px; cursor: pointer;">Upload to Strava</button>
+        <div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div>
+                <h2 style="margin: 0;">Recent Rides</h2>
+                <div class="muted" id="stravaState">Checking Strava configuration…</div>
+            </div>
+            <div>
+                <button class="btn btn-strava" id="uploadLatest" onclick="uploadLatest()">Upload latest to Strava</button>
+                <a class="btn btn-download" id="downloadLatest" href="#" download>Download latest TCX</a>
+                <button class="btn btn-email" id="emailLatest" onclick="emailLatest()">Email latest TCX</button>
+                <span class="status" id="uploadStatus"></span>
+                <span class="status" id="emailStatus"></span>
+            </div>
         </div>
         <div class="card">
-            <h2>Recent Rides</h2>
+            <h2>Rides</h2>
             <table id="ridesTable">
                 <thead>
                     <tr>
@@ -45,52 +61,210 @@
                         <th>Avg Power</th>
                         <th>Max Power</th>
                         <th>Work (kJ)</th>
+                        <th>Strava</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
-            <p id="noRides" style="color: #94a3b8; display: none;">No rides recorded yet.</p>
+            <p id="noRides" style="color: #94a3b8; display: none;">No rides recorded yet. A ride is saved when the bike disconnects, the bridge stops, or you press “Finish Ride” on the dashboard.</p>
+            <p class="muted" style="margin-bottom: 0;">No Strava subscription? Use <em>Download TCX</em> and upload the file manually at
+                <a href="https://www.strava.com/upload/select" target="_blank" rel="noopener" style="color: #3b82f6;">strava.com/upload/select</a> (free, no API access needed).</p>
         </div>
     </div>
     <script>
+        let stravaConfigured = false;
+        let latestRideId = null;
+
         function fmtTime(s) {
             const h = Math.floor(s/3600);
             const m = Math.floor((s%3600)/60);
             const sec = Math.floor(s%60);
             return h>0?`${h}h ${m}m ${sec}s`:`${m}m ${sec}s`;
         }
+
+        function setStatus(text, isError) {
+            const el = document.getElementById('uploadStatus');
+            el.textContent = text || '';
+            el.style.color = isError ? '#f87171' : '#4ade80';
+        }
+
+        function markUploaded(button, activityId) {
+            button.disabled = true;
+            button.textContent = 'Uploaded';
+            if (activityId) {
+                const link = document.createElement('a');
+                link.href = `https://www.strava.com/activities/${activityId}`;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = ' View';
+                link.style.color = '#fc4c02';
+                button.insertAdjacentElement('afterend', link);
+            }
+        }
+
+        async function uploadRide(rideId, button) {
+            const payload = rideId ? {ride_id: rideId} : {};
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Uploading…';
+            }
+            setStatus('Uploading to Strava…', false);
+            try {
+                const res = await fetch('/api/strava/upload', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    setStatus(`Uploaded${data.activity_id ? ' (activity ' + data.activity_id + ')' : ''}`, false);
+                    if (button) markUploaded(button, data.activity_id);
+                } else {
+                    setStatus(data.error || 'Upload failed', true);
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = 'Upload';
+                    }
+                }
+            } catch (e) {
+                setStatus('Upload failed: ' + e, true);
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = 'Upload';
+                }
+            }
+        }
+
+        async function uploadLatest() {
+            await uploadRide(latestRideId, document.getElementById('uploadLatest'));
+        }
+
+        function setEmailStatus(text, isError) {
+            const el = document.getElementById('emailStatus');
+            el.textContent = text || '';
+            el.style.color = isError ? '#f87171' : '#4ade80';
+        }
+
+        async function emailRide(rideId, button) {
+            if (button) {
+                button.disabled = true;
+                button.dataset.label = button.textContent;
+                button.textContent = 'Sending…';
+            }
+            setEmailStatus('Sending email…', false);
+            try {
+                const res = await fetch(`/api/rides/${encodeURIComponent(rideId)}/email`, {
+                    method: 'POST'
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    setEmailStatus(`Sent to ${data.to}`, false);
+                    if (button) button.textContent = 'Sent';
+                } else {
+                    setEmailStatus(data.error || 'Sending failed', true);
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = button.dataset.label || 'Email';
+                    }
+                }
+            } catch (e) {
+                setEmailStatus('Sending failed: ' + e, true);
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = button.dataset.label || 'Email';
+                }
+            }
+        }
+
+        async function emailLatest() {
+            if (!latestRideId) return;
+            await emailRide(latestRideId, document.getElementById('emailLatest'));
+        }
+
+        async function loadStatus() {
+            try {
+                const res = await fetch('/api/strava/status');
+                const data = await res.json();
+                stravaConfigured = !!data.configured;
+                const el = document.getElementById('stravaState');
+                if (stravaConfigured) {
+                    el.textContent = data.auto_upload
+                        ? 'Strava configured · rides upload automatically'
+                        : 'Strava configured';
+                } else {
+                    el.textContent = 'Strava API not configured. Download a TCX below and upload it manually (free), or set up the API with "daum-bridge strava-auth".';
+                }
+                if (!latestRideId) document.getElementById('uploadLatest').disabled = true;
+            } catch (e) {
+                document.getElementById('stravaState').textContent = 'Strava status unavailable';
+            }
+        }
+
         async function load() {
             try {
                 const res = await fetch('/api/history');
                 const data = await res.json();
                 const tbody = document.querySelector('#ridesTable tbody');
                 tbody.innerHTML = '';
-                if (!data.rides || data.rides.length === 0) {
+                const rides = data.rides || [];
+                if (rides.length === 0) {
                     document.getElementById('noRides').style.display = 'block';
                     return;
                 }
                 document.getElementById('noRides').style.display = 'none';
-                for (const ride of data.rides.reverse()) {
+                latestRideId = rides[0].id || null;
+                const latestButton = document.getElementById('uploadLatest');
+                latestButton.disabled = !latestRideId;
+                document.getElementById('emailLatest').disabled = !latestRideId;
+                const downloadLatest = document.getElementById('downloadLatest');
+                if (latestRideId) {
+                    downloadLatest.href = `/api/rides/${encodeURIComponent(latestRideId)}/tcx`;
+                    downloadLatest.setAttribute('download', `${latestRideId}.tcx`);
+                } else {
+                    downloadLatest.removeAttribute('href');
+                }
+                for (const ride of rides) {
                     const tr = document.createElement('tr');
                     const date = new Date((ride.start || Date.now()/1000) * 1000).toLocaleString();
                     tr.innerHTML = `<td>${date}</td><td>${fmtTime(ride.duration||0)}</td><td>${(ride.distance||0).toFixed(1)} km</td><td>${(ride.avg_power||0).toFixed(0)} W</td><td>${(ride.max_power||0).toFixed(0)} W</td><td>${(ride.work_kj||0).toFixed(1)} kJ</td>`;
+                    const actionCell = document.createElement('td');
+                    const button = document.createElement('button');
+                    button.className = 'btn btn-strava';
+                    button.textContent = 'Upload';
+                    if (ride.id) {
+                        button.onclick = () => uploadRide(ride.id, button);
+                    } else {
+                        button.disabled = true;
+                        button.title = 'Ride id missing';
+                    }
+                    actionCell.appendChild(button);
+                    if (ride.id) {
+                        const tcxLink = document.createElement('a');
+                        tcxLink.className = 'btn btn-download';
+                        tcxLink.textContent = 'TCX';
+                        tcxLink.href = `/api/rides/${encodeURIComponent(ride.id)}/tcx`;
+                        tcxLink.setAttribute('download', `${ride.id}.tcx`);
+                        tcxLink.title = 'Download TCX for manual upload';
+                        tcxLink.style.marginLeft = '6px';
+                        actionCell.appendChild(tcxLink);
+
+                        const emailButton = document.createElement('button');
+                        emailButton.className = 'btn btn-email';
+                        emailButton.textContent = 'Email';
+                        emailButton.title = 'Send this TCX by email';
+                        emailButton.style.marginLeft = '6px';
+                        emailButton.onclick = () => emailRide(ride.id, emailButton);
+                        actionCell.appendChild(emailButton);
+                    }
+                    tr.appendChild(actionCell);
                     tbody.appendChild(tr);
                 }
-            } catch(e) {}
-        }
-        async function syncStrava() {
-            try {
-                const res = await fetch('/api/strava/upload', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})});
-                const data = await res.json();
-                if (data.ok) {
-                    alert('Uploaded to Strava!');
-                } else {
-                    alert('Error: ' + (data.error || 'unknown'));
-                }
             } catch(e) {
-                alert('Error: ' + e);
+                document.getElementById('stravaState').textContent = 'Could not load rides';
             }
         }
+
+        loadStatus();
         load();
     </script>
 </body>

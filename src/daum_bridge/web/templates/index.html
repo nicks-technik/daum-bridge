@@ -51,7 +51,11 @@
             <a href="/config" style="color: #3b82f6; text-decoration: none;">⚙️ Config</a>
             <a href="/logs" style="color: #3b82f6; text-decoration: none;">📋 Logs</a>
             <a href="/history" style="color: #3b82f6; text-decoration: none;">🚴 History</a>
+            <a href="/downloads" style="color: #3b82f6; text-decoration: none;">⬇️ Downloads</a>
             <button onclick="reconnectSerial()" style="padding: 6px 12px; background: #334155; color: white; border: none; border-radius: 6px; cursor: pointer;">Reconnect Serial</button>
+            <button id="finishRideBtn" onclick="finishRide()" style="padding: 6px 12px; background: #16a34a; color: white; border: none; border-radius: 6px; cursor: pointer;">Finish Ride &amp; Save TCX</button>
+            <button id="resumeRideBtn" onclick="resumeRide()" style="display: none; padding: 6px 12px; background: #f59e0b; color: #0f172a; border: none; border-radius: 6px; cursor: pointer;">Resume Recording</button>
+            <span id="rideStatus" style="color: #94a3b8; font-size: 13px;"></span>
             <span id="uptime" style="color: #94a3b8; font-size: 13px;"></span>
         </div>
         <div class="status-bar">
@@ -254,6 +258,16 @@
                     appStatus.textContent = 'Not Connected';
                 }
                 document.getElementById('vs-status').textContent = data.virtual_shifting ? 'Enabled' : 'Disabled';
+
+                const finishBtn = document.getElementById('finishRideBtn');
+                const resumeBtn = document.getElementById('resumeRideBtn');
+                if (data.ride_paused) {
+                    finishBtn.style.display = 'none';
+                    resumeBtn.style.display = 'inline-block';
+                } else {
+                    finishBtn.style.display = 'inline-block';
+                    resumeBtn.style.display = 'none';
+                }
                 
                 const ergStatus = document.getElementById('erg-status');
                 if (data.erg_control_granted) {
@@ -301,6 +315,12 @@
                     bleStatus.textContent = 'Off';
                 }
                 document.getElementById('err-count').textContent = data.consecutive_errors || 0;
+                const uptime = document.getElementById('uptime');
+                if (typeof data.uptime_seconds === 'number') {
+                    const h = Math.floor(data.uptime_seconds / 3600);
+                    const m = Math.floor((data.uptime_seconds % 3600) / 60);
+                    uptime.textContent = h > 0 ? `Uptime ${h}h ${m}m` : `Uptime ${m}m`;
+                }
             } catch (e) {}
         }
         
@@ -338,6 +358,80 @@
         updateState();
         updateDiag();
         setTimeout(initCharts, 500);
+        async function finishRide() {
+            const status = document.getElementById('rideStatus');
+            status.textContent = 'Saving ride…';
+            try {
+                const res = await fetch('/api/ride/finish', {method: 'POST'});
+                const data = await res.json();
+                if (!data.ok) {
+                    status.textContent = '';
+                    showToast(data.error || 'Could not finish ride', 'error');
+                    return;
+                }
+                const rideId = data.ride && data.ride.id;
+                const duration = data.ride ? Math.round(data.ride.duration || 0) : 0;
+                status.innerHTML = '';
+                if (rideId) {
+                    const tcx = document.createElement('a');
+                    tcx.href = `/api/rides/${encodeURIComponent(rideId)}/tcx`;
+                    tcx.setAttribute('download', `${rideId}.tcx`);
+                    tcx.textContent = 'Download TCX';
+                    tcx.style.color = '#3b82f6';
+                    tcx.style.marginRight = '10px';
+                    status.appendChild(tcx);
+                    const mail = document.createElement('button');
+                    mail.textContent = 'Email TCX';
+                    mail.style.cssText = 'background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:2px 8px;cursor:pointer;margin-right:10px;font-size:12px;';
+                    mail.onclick = () => sendRideEmail(rideId, mail);
+                    status.appendChild(mail);
+                    const all = document.createElement('a');
+                    all.href = '/downloads';
+                    all.textContent = 'All downloads';
+                    all.style.color = '#3b82f6';
+                    status.appendChild(all);
+                }
+                showToast(`Ride saved (${duration}s)`, 'success');
+                setTimeout(updateState, 200);
+            } catch(e) {
+                status.textContent = '';
+                showToast('Error: ' + e, 'error');
+            }
+        }
+
+        async function sendRideEmail(rideId, button) {
+            const original = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Sending…';
+            try {
+                const res = await fetch(`/api/rides/${encodeURIComponent(rideId)}/email`, {
+                    method: 'POST'
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    button.textContent = 'Sent';
+                    showToast('TCX emailed to ' + data.to, 'success');
+                } else {
+                    button.disabled = false;
+                    button.textContent = original;
+                    showToast(data.error || 'Email failed', 'error');
+                }
+            } catch(e) {
+                button.disabled = false;
+                button.textContent = original;
+                showToast('Email failed: ' + e, 'error');
+            }
+        }
+
+        async function resumeRide() {
+            try {
+                await fetch('/api/ride/resume', {method: 'POST'});
+                document.getElementById('rideStatus').textContent = 'Recording…';
+                showToast('Ride recording resumed', 'success');
+                setTimeout(updateState, 200);
+            } catch(e) { showToast('Error: ' + e, 'error'); }
+        }
+
         async function reconnectSerial() {
             try {
                 const res = await fetch('/api/reconnect/serial', {method: 'POST'});

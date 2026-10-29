@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>daum-bridge - Downloads</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+        .header { background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); padding: 20px 40px; }
+        .header h1 { margin: 0; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+        .nav { margin-bottom: 20px; }
+        .nav a { color: #3b82f6; text-decoration: none; margin-right: 15px; }
+        .card { background: #1e293b; padding: 25px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #334155; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; white-space: nowrap; }
+        th { color: #94a3b8; font-weight: 600; }
+        tbody tr:hover { background: #243449; }
+        .btn { display: inline-block; padding: 6px 12px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-size: 13px; border: none; cursor: pointer; }
+        .btn:hover { background: #2563eb; }
+        .btn-email { background: #0ea5e9; margin-left: 6px; }
+        .btn-email:hover { background: #0284c7; }
+        .btn[disabled] { background: #475569; cursor: not-allowed; }
+        .muted { color: #94a3b8; font-size: 13px; }
+        .scroll { overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⬇️ Training Downloads</h1>
+    </div>
+    <div class="container">
+        <div class="nav">
+            <a href="/">← Dashboard</a>
+            <a href="/history">Ride History</a>
+            <a href="/logs">Logs</a>
+            <a href="/config">Config</a>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px;">
+                <h2 style="margin: 0;">Recorded Trainings</h2>
+                <span class="muted">{{ rides | length }} ride{% if rides | length != 1 %}s{% endif %} · newest first</span>
+            </div>
+            <p class="muted">
+                Every finished ride is saved as JSON and exported as a TCX file. Download the TCX
+                and upload it manually at
+                <a href="https://www.strava.com/upload/select" target="_blank" rel="noopener" style="color: #3b82f6;">strava.com/upload/select</a>
+                (free, no Strava API subscription needed).
+            </p>
+            <p class="muted" style="margin-top: -8px;">
+                {% if email_configured %}
+                Email delivery is configured: <strong>{{ email_to }}</strong>
+                (see <a href="/config" style="color: #3b82f6;">Config</a>).
+                {% else %}
+                Email delivery is not configured yet — add the <code>email:</code> section in
+                <a href="/config" style="color: #3b82f6;">Config</a> to send TCX files by mail.
+                {% endif %}
+                <span id="emailStatus"></span>
+            </p>
+
+            {% if rides %}
+            <div class="scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Duration</th>
+                            <th>Distance</th>
+                            <th>Avg Power</th>
+                            <th>Max Power</th>
+                            <th>Work</th>
+                            <th>Avg HR</th>
+                            <th>Points</th>
+                            <th>TCX</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ride in rides %}
+                        <tr>
+                            <td>{{ ride.start | dt }}</td>
+                            <td>{{ ride.duration | duration }}</td>
+                            <td>{{ "%.2f" | format(ride.distance or 0) }} km</td>
+                            <td>{{ "%.0f" | format(ride.avg_power or 0) }} W</td>
+                            <td>{{ "%.0f" | format(ride.max_power or 0) }} W</td>
+                            <td>{{ "%.1f" | format(ride.work_kj or 0) }} kJ</td>
+                            <td>{{ "%.0f" | format(ride.avg_heart_rate or 0) }} bpm</td>
+                            <td>{{ ride.sample_count or 0 }}</td>
+                            <td>
+                                {% if ride.id %}
+                                <a class="btn" href="/api/rides/{{ ride.id }}/tcx" download="{{ ride.id }}.tcx">Download TCX</a>
+                                <button class="btn btn-email" onclick="emailRide('{{ ride.id }}', this)" title="Send this TCX by email">Email</button>
+                                {% else %}
+                                <span class="muted">-</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="muted" style="margin-bottom: 0;">
+                No trainings recorded yet. A ride is saved automatically when the bike disconnects,
+                when the bridge stops, or when you press <strong>Finish Ride</strong> on the dashboard.
+            </p>
+            {% endif %}
+        </div>
+
+        <p class="muted">
+            Files are stored in the <code>rides/</code> directory on the bridge machine
+            (<code>&lt;ride-id&gt;.json</code> and <code>&lt;ride-id&gt;.tcx</code>).
+            Export an older ride from the command line with <code>uv run daum-bridge export-tcx --ride rides/&lt;id&gt;.json</code>.
+        </p>
+    </div>
+    <script>
+        async function emailRide(rideId, button) {
+            const status = document.getElementById('emailStatus');
+            const label = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Sending…';
+            status.textContent = '';
+            try {
+                const res = await fetch(`/api/rides/${encodeURIComponent(rideId)}/email`, {
+                    method: 'POST'
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    status.textContent = ` · sent to ${data.to}`;
+                    status.style.color = '#4ade80';
+                    button.textContent = 'Sent';
+                } else {
+                    status.textContent = ' · ' + (data.error || 'sending failed');
+                    status.style.color = '#f87171';
+                    button.disabled = false;
+                    button.textContent = label;
+                }
+            } catch (e) {
+                status.textContent = ' · sending failed: ' + e;
+                status.style.color = '#f87171';
+                button.disabled = false;
+                button.textContent = label;
+            }
+        }
+    </script>
+</body>
+</html>
