@@ -20,6 +20,11 @@ dependencies = [
 [project.optional-dependencies]
 # ANT+ FE-C backend (requires an ANT USB stick and USB access).
 ant = ["openant>=1.3.4"]
+# Wired handlebar shift buttons on Raspberry Pi GPIO (needs lgpio/pigpio from
+# the OS: "sudo apt install python3-lgpio").
+gpio = ["gpiozero>=2.0"]
+# Bluetooth/USB HID shift buttons read through Linux evdev.
+input = ["evdev>=1.6; sys_platform == 'linux'"]
 
 [project.scripts]
 daum-bridge = "daum_bridge.cli:app"
