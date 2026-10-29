@@ -9,7 +9,7 @@ Bridge for **Daum 8008 TRS** ergo bike (RS232 via original Daum cable + RS232→
 - BLE FTMS peripheral (Linux/BlueZ) exposing Indoor Bike Data + Fitness Machine Control Point
 - Optional ANT+ FE-C trainer broadcast (pages 16/17/25/54, control pages 48/49/50/51)
 - Bidirectional control: receive target power/ERG, resistance and grade commands from MyWhoosh (or an ANT+ head unit) and forward them to the bike
-- Gear shifting via web UI (and CLI)
+- Gear shifting via web UI, CLI and optional handlebar buttons (Raspberry Pi GPIO or Bluetooth HID)
 - Ride recording with power/cadence/heart rate and distance
 - Ride history with TCX export, optional Strava upload (API upload requires a Strava subscription since June 2026) and optional email delivery of TCX files
 - Auto-detect serial port with config override

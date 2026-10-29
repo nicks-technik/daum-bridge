@@ -255,6 +255,36 @@ echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0fcf", MODE="0666"' | \
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
+## Handlebar shift buttons (optional)
+
+Shift gears from buttons on the bike instead of the web UI. Two backends are
+available and can run together:
+
+```bash
+uv sync --extra gpio --extra input
+```
+
+```yaml
+input:
+  enabled: true
+  backend: both     # none | gpio | evdev | both
+```
+
+- `gpio`: two momentary buttons on BCM17/BCM27 to GND (bridge must run on the Pi).
+- `evdev`: a Bluetooth HID button paired with `bluetoothctl`, read as an input
+  device (the bridge user must be in the `input` group).
+
+Check the wiring before riding:
+
+```bash
+uv run daum-bridge inputs status
+uv run daum-bridge inputs list
+uv run daum-bridge inputs test
+```
+
+See [gearshift-buttons.md](gearshift-buttons.md) for wiring, pairing, hardware
+suggestions and troubleshooting.
+
 ## Web UI
 Open `http://<bridge-ip>:8080` for status and gear shifting.
 
