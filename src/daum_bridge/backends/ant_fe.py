@@ -21,6 +21,8 @@ import logging
 import threading
 from typing import Callable, Optional
 
+from ..numbers import clamp
+
 log = logging.getLogger(__name__)
 
 try:  # pragma: no cover - depends on the optional ``ant`` extra
@@ -91,8 +93,13 @@ COMMAND_STATUS_UNINITIALISED = 0xFF
 COMMAND_SEQUENCE_INITIAL = 0xFF
 
 
-def _clamp(value: int, low: int, high: int) -> int:
-    return max(low, min(high, int(value)))
+def _clamp_int(value: int, low: int, high: int) -> int:
+    """Clamp a value to a packet field range and truncate it to an integer.
+
+    ANT+ pages are packed byte by byte, so unlike the general-purpose
+    :func:`daum_bridge.numbers.clamp` this variant must return an ``int``.
+    """
+    return int(clamp(value, low, high))
 
 
 def _state_byte(fe_state: int, lap_toggle: bool = False, capabilities: int = 0) -> int:
@@ -119,8 +126,8 @@ def encode_general_fe_data(
     ``elapsed_time`` is seconds (0.25 s resolution), ``distance_m`` metres
     (8-bit rollover) and ``speed_mps`` metres per second (0.001 m/s).
     """
-    speed_raw = _clamp(round(speed_mps * 1000.0), 0, 0xFFFF)
-    hr = HR_INVALID if not heart_rate else _clamp(int(heart_rate), 0, 0xFE)
+    speed_raw = _clamp_int(round(speed_mps * 1000.0), 0, 0xFFFF)
+    hr = HR_INVALID if not heart_rate else _clamp_int(int(heart_rate), 0, 0xFE)
     return bytes(
         (
             PAGE_GENERAL_FE,
@@ -151,11 +158,11 @@ def encode_general_settings(
     if incline_percent is None:
         incline_raw = INCLINE_INVALID
     else:
-        incline_raw = _clamp(round(incline_percent * 100.0), -32768, 32767) & 0xFFFF
+        incline_raw = _clamp_int(round(incline_percent * 100.0), -32768, 32767) & 0xFFFF
     if resistance_percent is None:
         resistance_raw = 0xFF
     else:
-        resistance_raw = _clamp(round(resistance_percent * 2.0), 0, 200)
+        resistance_raw = _clamp_int(round(resistance_percent * 2.0), 0, 200)
     return bytes(
         (
             PAGE_GENERAL_SETTINGS,
@@ -187,8 +194,8 @@ def encode_specific_trainer_data(
     the high nibble of byte 6 holds the trainer status and byte 7 holds the
     target-power-limits flag plus the FE state.
     """
-    power_raw = _clamp(instant_power, 0, 0x0FFF)
-    cadence_raw = CADENCE_INVALID if cadence is None else _clamp(cadence, 0, 0xFE)
+    power_raw = _clamp_int(instant_power, 0, 0x0FFF)
+    cadence_raw = CADENCE_INVALID if cadence is None else _clamp_int(cadence, 0, 0xFE)
     state_lap = fe_state & 0x07
     if lap_toggle:
         state_lap |= 0x08
@@ -212,7 +219,7 @@ def encode_fe_capabilities(
     capabilities: int = FE_CAPABILITIES_ALL,
 ) -> bytes:
     """Encode page 54 (FE Capabilities)."""
-    max_resistance = _clamp(max_resistance_n, 0, 0xFFFF)
+    max_resistance = _clamp_int(max_resistance_n, 0, 0xFFFF)
     return bytes(
         (
             PAGE_FE_CAPABILITIES,

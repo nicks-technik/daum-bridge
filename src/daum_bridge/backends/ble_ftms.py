@@ -10,6 +10,8 @@ import struct
 import time
 from typing import Optional
 
+from ..numbers import as_float, clamp
+
 log = logging.getLogger(__name__)
 
 try:
@@ -113,18 +115,6 @@ STATUS_TARGET_POWER_CHANGED = 0x08
 STATUS_SIMULATION_CHANGED = 0x12
 
 
-def _num(value, default: float = 0.0) -> float:
-    """Best-effort float conversion for values coming from the serial state."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _clamp_u16(value: float) -> int:
-    return max(0, min(0xFFFF, int(value)))
-
-
 def build_indoor_bike_data(state) -> bytes:
     """Encode an FTMS Indoor Bike Data notification for ``state``.
 
@@ -132,11 +122,13 @@ def build_indoor_bike_data(state) -> bytes:
     instantaneous speed (0.01 km/h), instantaneous cadence (0.5 rpm),
     instantaneous power (W), total distance (m), elapsed time (s).
     """
-    speed = _clamp_u16(_num(getattr(state, "speed", 0)) * 100.0)
-    cadence = _clamp_u16(_num(getattr(state, "cadence", 0)) * 2.0)
-    power = max(-32768, min(32767, int(_num(getattr(state, "power", 0)))))
-    distance = max(0, min(0xFFFFFF, int(_num(getattr(state, "total_distance", 0)) * 1000.0)))
-    elapsed = _clamp_u16(_num(getattr(state, "elapsed_time", 0)))
+    speed = int(clamp(as_float(getattr(state, "speed", 0)) * 100.0, 0, 0xFFFF))
+    cadence = int(clamp(as_float(getattr(state, "cadence", 0)) * 2.0, 0, 0xFFFF))
+    power = int(clamp(as_float(getattr(state, "power", 0)), -32768, 32767))
+    distance = int(
+        clamp(as_float(getattr(state, "total_distance", 0)) * 1000.0, 0, 0xFFFFFF)
+    )
+    elapsed = int(clamp(as_float(getattr(state, "elapsed_time", 0)), 0, 0xFFFF))
     return (
         struct.pack("<HHHh", INDOOR_BIKE_DATA_FLAGS, speed, cadence, power)
         + distance.to_bytes(3, "little")
@@ -146,8 +138,8 @@ def build_indoor_bike_data(state) -> bytes:
 
 def build_cycling_power(state, now: Optional[float] = None) -> bytes:
     """Encode a Cycling Power Measurement notification (power + crank data)."""
-    power = max(-32768, min(32767, int(_num(getattr(state, "power", 0)))))
-    cadence = max(0.0, _num(getattr(state, "cadence", 0)))
+    power = int(clamp(as_float(getattr(state, "power", 0)), -32768, 32767))
+    cadence = max(0.0, as_float(getattr(state, "cadence", 0)))
     now = time.time() if now is None else float(now)
     if cadence > 0:
         revolutions = int(now * cadence / 60.0) & 0xFFFF
@@ -256,8 +248,6 @@ class Characteristic(ServiceInterface):
             if hasattr(self, '_backend') and self._backend:
                 if hasattr(self._backend.bridge, '_app_connected'):
                     self._backend.bridge._app_connected = True
-                if hasattr(self._backend.bridge, '_client_connected'):
-                    self._backend.bridge._client_connected = True
         except Exception:
             pass
 
@@ -370,8 +360,6 @@ class BLEFTMSBackend:
         if self.bridge:
             if hasattr(self.bridge, '_app_connected'):
                 self.bridge._app_connected = False
-            if hasattr(self.bridge, '_client_connected'):
-                self.bridge._client_connected = False
 
         if not DBUS_AVAILABLE:
             log.warning("dbus-next not available; BLE FTMS peripheral cannot run on this platform")
@@ -647,8 +635,6 @@ class BLEFTMSBackend:
             log.info("Control Point op: 0x%02X data=%s", op_code, raw.hex())
             if self.bridge and hasattr(self.bridge, '_app_connected'):
                 self.bridge._app_connected = True
-            if self.bridge and hasattr(self.bridge, '_client_connected'):
-                self.bridge._client_connected = True
 
             # Request Control (0x00)
             if op_code == OP_REQUEST_CONTROL:
@@ -872,8 +858,6 @@ class BLEFTMSBackend:
         try:
             if self.bridge and hasattr(self.bridge, '_app_connected'):
                 self.bridge._app_connected = False
-            if self.bridge and hasattr(self.bridge, '_client_connected'):
-                self.bridge._client_connected = False
         except Exception:
             pass
 
