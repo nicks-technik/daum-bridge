@@ -1,3 +1,22 @@
+"""The bridge between the Daum cockpit and a training app.
+
+:class:`DaumBridge` owns one serial connection to the Daum 8008 TRS and exposes
+what a training app needs: a state snapshot, a target power (ERG), a gear and a
+resistance level. The heavy lifting is delegated to three collaborators so this
+module stays about *coordinating* them:
+
+* :mod:`daum_bridge.serial` — the RS232 protocol and the state object;
+* :class:`~daum_bridge.ride_recorder.RideRecorder` — ride statistics and
+  trackpoints, i.e. everything needed to export a finished ride;
+* :mod:`daum_bridge.gears` — the pure gear / resistance / grade translation;
+* :mod:`daum_bridge.backends` — BLE FTMS and ANT+ FE-C transports;
+* :mod:`daum_bridge.inputs` — physical gear-shift buttons.
+
+A background thread polls the cockpit, updates :attr:`state` and notifies the
+registered callbacks. Backends (BLE/ANT+) run their own loops and call the
+control methods below when the app requests a change.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,75 +26,113 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import gears
+from .numbers import maybe_float, maybe_int
+from .ride_recorder import RideRecorder
 from .serial.daum import DaumProtocol, DaumState
 from .serial.port import auto_detect_daum_port, open_serial
 
 log = logging.getLogger(__name__)
 
 
+
 class DaumBridge:
-    #: Seconds between recorded trackpoints (used for Strava/TCX export).
-    SAMPLE_INTERVAL = 1.0
-    #: Hard limit for in-memory samples (~27 h at 1 Hz).
-    MAX_SAMPLES = 100_000
+    #: Kept as aliases so code that referenced the class attributes directly
+    #: still works; the recorder is the single source of truth for the values.
+    SAMPLE_INTERVAL = RideRecorder.SAMPLE_INTERVAL
+    MAX_SAMPLES = RideRecorder.MAX_SAMPLES
 
     def __init__(self, config):
         self.config = config
+
+        # --- serial connection -------------------------------------------
         self.serial_port = None
         self.protocol: Optional[DaumProtocol] = None
         self.state = DaumState()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._callbacks = []
-        self._target_watt = 0
-        self._target_gear = 1
-        self._target_resistance_pct = 0.0
-        self._target_grade_pct: Optional[float] = None
+        self._callbacks: list = []
+        self._consecutive_errors = 0
+        self._last_reconnect = 0.0
+        self._serial_connected_time = None
+
+        # --- training-app connection (FTMS over BLE / ANT+ FE-C) ---------
         self._ble_backend = None
         self._ble_loop = None
         self._ble_thread = None
         self._ant_backend = None
+        #: True while a training app (MyWhoosh/Zwift, i.e. an FTMS client) is
+        #: attached. Written by the BLE backend when notifications start and
+        #: cleared when the client disconnects. The private attribute is exposed
+        #: through the ``_app_connected`` property below, which also records the
+        #: connection time so read-only endpoints never have to mutate state.
+        self.__app_connected = False
+        self._app_connected_time = None
+
+        # --- load control (ERG target, gear, resistance/grade) -----------
+        self._target_watt = 0
+        self._target_gear = 1
+        self._target_resistance_pct = 0.0
+        self._target_grade_pct: Optional[float] = None
         self._erg_control_granted = False
         self._last_target_set = 0.0
-        self._consecutive_errors = 0
-        self._last_reconnect = 0.0
-        self._client_connected = False
-        self._app_connected = False
-        self._virtual_shifting_enabled = True
-        self._start_time = time.time()
-        self._serial_connected_time = None
-        self._app_connected_time = None
         self._erg_retry_count = 0
         self._last_erg_attempt = 0.0
-        self._logs = []
-        self._ride_history = []
-        self._current_ride = None
-        self._ride_start = None
-        self._ride_work = 0.0
-        self._last_power_time = None
-        self._ride_max_power = 0.0
-        self._ride_avg_power = 0.0
-        self._ride_power_sum = 0.0
-        self._ride_power_count = 0
-        self._ride_samples = []
-        self._last_sample_time = 0.0
-        self._ride_paused = False
-        self._ride_hr_sum = 0.0
-        self._ride_hr_count = 0
-        self._ride_max_hr = 0.0
-        self._ride_cadence_sum = 0.0
-        self._ride_cadence_count = 0
-        self._ride_distance = 0.0
-        self._last_odometer = None
+        self._virtual_shifting_enabled = True
+
+        # --- ride recording ----------------------------------------------
+        self._recorder = RideRecorder()
+
+        # --- ride export (Strava / email) --------------------------------
         self._last_strava_result = None
         self._last_email_result = None
         self._strava_thread = None
         self._email_thread = None
-        self._inputs = []
-        self._input_problems = []
+
+        # --- handlebar shift buttons -------------------------------------
+        self._inputs: list = []
+        self._input_problems: list = []
         self._last_shift_source: Optional[str] = None
         self._last_shift_at = 0.0
 
+        # --- diagnostics --------------------------------------------------
+        self._start_time = time.time()
+        self._logs: list = []
+
+    # -- ride-recording compatibility views -------------------------------
+    # Ride statistics live in :class:`RideRecorder`; these views keep the
+    # attribute names that the web UI and the existing tests use.
+
+    @property
+    def _app_connected(self) -> bool:
+        """Whether a training app is currently attached over BLE/ANT+."""
+        return self.__app_connected
+
+    @_app_connected.setter
+    def _app_connected(self, value: bool) -> None:
+        """Track when the app connected, not when somebody first asked."""
+        connected = bool(value)
+        if connected and not self.__app_connected:
+            self._app_connected_time = time.time()
+        elif not connected:
+            self._app_connected_time = None
+        self.__app_connected = connected
+
+    @property
+    def _ride_history(self) -> list:
+        return self._recorder.history
+
+    @property
+    def _current_ride(self):
+        return self._recorder.current_ride
+
+    @property
+    def _ride_paused(self) -> bool:
+        return self._recorder.paused
+
+    @_ride_paused.setter
+    def _ride_paused(self, value: bool) -> None:
+        self._recorder.paused = bool(value)
 
     def add_state_callback(self, cb: Callable[[DaumState], None]):
         self._callbacks.append(cb)
@@ -92,6 +149,12 @@ class DaumBridge:
             pass
 
     def _update_ride_stats(self):
+        """Feed the current state into the ride recorder.
+
+        This is also where the recording lifecycle lives: recording starts when
+        the cockpit connects, ends when it disconnects, and stays quiet while a
+        ride was finished manually (see :meth:`finish_current_ride`).
+        """
         try:
             connected = bool(getattr(self.state, "connected", False))
             if not connected:
@@ -99,114 +162,29 @@ class DaumBridge:
                 self._ride_paused = False
             if self._ride_paused:
                 return
-            if self._current_ride is None:
+            if self._recorder.current_ride is None:
                 if not connected:
                     return
                 self._start_ride()
             if not connected:
                 self.finish_ride()
                 return
-
-            now = time.time()
-            dt = (now - self._last_power_time) if self._last_power_time else 0.0
-            power = max(0.0, float(getattr(self.state, 'power', 0) or 0))
-            if power > 0 and 0 < dt < 5:
-                self._ride_work += power * dt / 3600.0  # kJ
-            self._last_power_time = now
-            self._ride_max_power = max(self._ride_max_power, power)
-            self._ride_power_sum += power
-            self._ride_power_count += 1
-            self._ride_avg_power = self._ride_power_sum / self._ride_power_count
-
-            heart_rate = float(getattr(self.state, 'heart_rate', 0) or 0)
-            if heart_rate > 0:
-                self._ride_hr_sum += heart_rate
-                self._ride_hr_count += 1
-                self._ride_max_hr = max(self._ride_max_hr, heart_rate)
-            cadence = max(0.0, float(getattr(self.state, 'cadence', 0) or 0))
-            if cadence > 0:
-                self._ride_cadence_sum += cadence
-                self._ride_cadence_count += 1
-
-            self._update_ride_distance(dt)
-            self._record_ride_sample(now, power, cadence, heart_rate)
+            self._recorder.update(self.state, time.time())
         except Exception:
             pass
 
     def _start_ride(self):
-        now = time.time()
-        self._current_ride = now
-        self._ride_start = now
-        self._ride_work = 0.0
-        self._last_power_time = now
-        self._ride_max_power = 0.0
-        self._ride_avg_power = 0.0
-        self._ride_power_sum = 0.0
-        self._ride_power_count = 0
-        self._ride_samples = []
-        self._last_sample_time = 0.0
-        self._ride_hr_sum = 0.0
-        self._ride_hr_count = 0
-        self._ride_max_hr = 0.0
-        self._ride_cadence_sum = 0.0
-        self._ride_cadence_count = 0
-        self._ride_distance = 0.0
-        self._last_odometer = None
-        log.info("Ride recording started")
-
-    def _update_ride_distance(self, dt: float) -> float:
-        """Track distance in km from the cockpit odometer, else from speed."""
-        total = float(getattr(self.state, 'total_distance', 0) or 0)
-        if total > 0:
-            if self._last_odometer is None:
-                self._last_odometer = total
-            else:
-                delta = total - self._last_odometer
-                # Odometer has 0.1 km resolution; ignore resets/jumps.
-                if 0 <= delta <= 2.0:
-                    self._ride_distance += delta
-                self._last_odometer = total
-        else:
-            speed = float(getattr(self.state, 'speed', 0) or 0)
-            if 0 < speed < 120 and 0 < dt < 60:
-                self._ride_distance += speed * dt / 3600.0
-        return self._ride_distance
-
-    def _record_ride_sample(self, now: float, power: float, cadence: float, heart_rate: float):
-        if self._last_sample_time and now - self._last_sample_time < self.SAMPLE_INTERVAL:
-            return
-        self._last_sample_time = now
-        if self._ride_samples and len(self._ride_samples) >= self.MAX_SAMPLES:
-            del self._ride_samples[:1000]
-        self._ride_samples.append({
-            "t": round(now - (self._ride_start or now), 3),
-            "power": round(power, 1),
-            "cadence": round(cadence, 1),
-            "speed": round(float(getattr(self.state, 'speed', 0) or 0), 1),
-            "heart_rate": int(heart_rate),
-            "distance": round(self._ride_distance, 3),
-        })
+        """Start a new ride recording (kept because resume/notify both use it)."""
+        self._recorder.start(time.time())
 
     def finish_ride(self) -> Optional[dict]:
         """Finish and persist the current ride. Safe to call repeatedly."""
-        if self._current_ride is None:
+        ride = self._recorder.build_ride(time.time())
+        if ride is None:
             return None
-        end = time.time()
-        start = self._ride_start or self._current_ride
-        ride = {
-            "start": start,
-            "end": end,
-            "duration": max(0.0, end - start),
-            "distance": round(self._ride_distance, 2),
-            "work_kj": round(self._ride_work, 2),
-            "avg_power": round(self._ride_avg_power, 1),
-            "max_power": round(self._ride_max_power, 1),
-            "avg_heart_rate": round(self._ride_hr_sum / self._ride_hr_count, 1) if self._ride_hr_count else 0,
-            "max_heart_rate": round(self._ride_max_hr, 1),
-            "avg_cadence": round(self._ride_cadence_sum / self._ride_cadence_count, 1) if self._ride_cadence_count else 0,
-            "samples": self._ride_samples,
-        }
-        summary = {k: v for k, v in ride.items() if k != "samples"}
+
+        # The web UI only needs aggregates; keep the samples out of memory.
+        summary = {key: value for key, value in ride.items() if key != "samples"}
         summary["sample_count"] = len(ride["samples"])
         try:
             from . import history
@@ -216,11 +194,7 @@ class DaumBridge:
         except Exception as e:
             log.warning("Could not save ride history: %s", e)
         ride["id"] = ride.get("id") or summary.get("id")
-        self._ride_history.append(summary)
-        if len(self._ride_history) > 200:
-            del self._ride_history[:-200]
-        self._current_ride = None
-        self._ride_start = None
+        self._recorder.remember(summary)
         log.info(
             "Ride finished: %.1f km, %.0f W avg, %.0f kJ, %d samples",
             summary["distance"], summary["avg_power"], summary["work_kj"], summary["sample_count"],
@@ -589,11 +563,8 @@ class DaumBridge:
         keeps holding the last target power and the gear change has no effect
         on the load.
         """
-        try:
-            step = int(delta)
-        except (TypeError, ValueError):
-            return
-        if step == 0:
+        step = maybe_int(delta)
+        if not step:
             return
         input_cfg = getattr(self.config, "input", None)
         if getattr(input_cfg, "shift_clears_erg", True) and (
@@ -614,26 +585,15 @@ class DaumBridge:
     @property
     def max_gear(self) -> int:
         """Highest usable gear (the Daum protocol accepts 1..28)."""
-        try:
-            value = int(getattr(self.config.bridge, "max_gear", 20) or 20)
-        except (TypeError, ValueError):
-            value = 20
-        return max(2, min(28, value))
+        return gears.clamp_max_gear(getattr(self.config.bridge, "max_gear", gears.DEFAULT_MAX_GEAR))
 
     def gear_to_resistance_percent(self, gear: int) -> float:
         """Map a Daum gear (1..max_gear) to a 0-100 % resistance level."""
-        gear = max(1, min(self.max_gear, int(gear)))
-        return round((gear - 1) / (self.max_gear - 1) * 100.0, 1)
+        return gears.gear_to_resistance_percent(gear, self.max_gear)
 
     def resistance_to_gear(self, percent: float) -> int:
         """Map a 0-100 % resistance level to the nearest Daum gear."""
-        try:
-            pct = float(percent)
-        except (TypeError, ValueError):
-            pct = 0.0
-        pct = max(0.0, min(100.0, pct))
-        gear = 1 + int(round(pct / 100.0 * (self.max_gear - 1)))
-        return max(1, min(self.max_gear, gear))
+        return gears.resistance_to_gear(percent, self.max_gear)
 
     def set_resistance_percent(self, percent: float):
         """Apply a 0-100 % resistance level (FTMS/FE-C simulation mode).
@@ -642,9 +602,8 @@ class DaumBridge:
         otherwise the cockpit keeps holding the last target power and gear
         changes have no effect.
         """
-        try:
-            pct = float(percent)
-        except (TypeError, ValueError):
+        pct = maybe_float(percent)
+        if pct is None:
             return
         pct = max(0.0, min(100.0, pct))
         self._target_resistance_pct = round(pct, 1)
@@ -661,9 +620,8 @@ class DaumBridge:
         resistance level: 0 % maps to half of the gear range and every 1 %
         of grade adds 5 percentage points (clamped to 0-100 %).
         """
-        try:
-            value = float(grade)
-        except (TypeError, ValueError):
+        value = maybe_float(grade)
+        if value is None:
             return
         value = max(-25.0, min(25.0, value))
         self.set_resistance_percent(50.0 + value * 5.0)
