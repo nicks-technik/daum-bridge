@@ -20,6 +20,9 @@ from .web.app import create_app
 app = typer.Typer(name="daum-bridge", help="Bridge Daum 8008 TRS to MyWhoosh via BLE FTMS")
 console = Console()
 
+inputs_app = typer.Typer(help="Physical gear-shift buttons (GPIO or Bluetooth HID)")
+app.add_typer(inputs_app, name="inputs")
+
 
 def setup_logging(level: str = "INFO", log_file: str = None):
     handlers = [logging.StreamHandler()]
@@ -372,6 +375,137 @@ def run(
                 pass
         except KeyboardInterrupt:
             bridge.stop()
+
+
+@inputs_app.command("list")
+def inputs_list():
+    """List input devices that can provide shift buttons."""
+    from .inputs.evdev_buttons import device_key_codes
+
+    try:
+        import evdev
+        from evdev import ecodes
+    except Exception as e:
+        console.print(f"[yellow]python-evdev is not installed ({e}).[/yellow]")
+        console.print("Install it with: [bold]uv sync --extra input[/bold]")
+    else:
+        table = Table(title="Input devices")
+        table.add_column("Device")
+        table.add_column("Name")
+        table.add_column("Useful keys")
+        candidates = (
+            "KEY_VOLUMEUP",
+            "KEY_VOLUMEDOWN",
+            "KEY_PAGEUP",
+            "KEY_PAGEDOWN",
+            "KEY_ENTER",
+        )
+        for path in sorted(evdev.list_devices()):
+            try:
+                dev = evdev.InputDevice(path)
+            except Exception as err:
+                console.print(f"[dim]{path}: {err}[/dim]")
+                continue
+            codes = device_key_codes(dev, ecodes)
+            keys = [name for name in candidates if getattr(ecodes, name, None) in codes]
+            table.add_row(path, dev.name or "", ", ".join(keys) or "-")
+            dev.close()
+        console.print(table)
+        console.print("Use the path (or [bold]name:<substring>[/bold]) as input.evdev.device.")
+
+    try:
+        import gpiozero
+    except Exception as e:
+        console.print(
+            f"[dim]gpiozero not available ({e}); wired buttons need 'uv sync --extra gpio'.[/dim]"
+        )
+    else:
+        console.print(f"[green]gpiozero {getattr(gpiozero, '__version__', '')} available.[/green]")
+
+
+@inputs_app.command("test")
+def inputs_test(
+    backend: str = typer.Option("evdev", "--backend", help="evdev or gpio"),
+    device: str = typer.Option(
+        "", "--device", help="evdev path, name:<substring>, or empty to auto-detect"
+    ),
+    up_key: str = typer.Option("KEY_VOLUMEUP", "--up-key", help="evdev key for shifting up"),
+    down_key: str = typer.Option("KEY_VOLUMEDOWN", "--down-key", help="evdev key for shifting down"),
+    up_pin: int = typer.Option(17, "--up-pin", help="BCM pin for shifting up"),
+    down_pin: int = typer.Option(27, "--down-pin", help="BCM pin for shifting down"),
+):
+    """Watch the buttons and print the shifts they would trigger (Ctrl+C to stop)."""
+    import time
+    from types import SimpleNamespace
+
+    from .config import EvdevInputConfig, GPIOInputConfig, InputConfig
+    from .inputs import SHIFT_UP, build_inputs
+
+    selection = InputConfig(
+        enabled=True,
+        backend=backend,
+        gpio=GPIOInputConfig(up_pin=up_pin, down_pin=down_pin),
+        evdev=EvdevInputConfig(device=device, up_key=up_key, down_key=down_key),
+    )
+
+    def on_shift(delta: int, source: str):
+        label = "HARDER (+1)" if delta == SHIFT_UP else "EASIER (-1)"
+        console.print(f"[green]{source}: {label}[/green]")
+
+    started, problems = build_inputs(SimpleNamespace(input=selection), on_shift)
+    for problem in problems:
+        console.print(f"[red]{problem}[/red]")
+    if not started:
+        raise typer.Exit(code=1)
+
+    console.print("[bold]Press the buttons (Ctrl+C to stop)...[/bold]")
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        console.print("")
+    finally:
+        for item in started:
+            try:
+                item.stop()
+            except Exception:
+                pass
+
+
+@inputs_app.command("status")
+def inputs_status(
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
+):
+    """Show the configured shift buttons and whether their drivers are usable."""
+    cfg = get_env_overrides(Config.load(config))
+    ic = cfg.input
+
+    table = Table(title="Shift buttons")
+    table.add_column("Setting")
+    table.add_column("Value")
+    table.add_row("enabled", str(ic.enabled))
+    table.add_row("backend", ic.backend)
+    table.add_row("leaves ERG", str(ic.shift_clears_erg))
+    table.add_row("hold-to-repeat", f"{ic.repeat_delay}s, then every {ic.repeat_interval}s")
+    table.add_row(
+        "gpio pins",
+        f"BCM{ic.gpio.up_pin} / BCM{ic.gpio.down_pin} (active_low={ic.gpio.active_low})",
+    )
+    table.add_row("evdev device", ic.evdev.device or "auto-detect")
+    table.add_row("evdev keys", f"{ic.evdev.up_key} / {ic.evdev.down_key}")
+    console.print(table)
+
+    for module, extra in (("evdev", "input"), ("gpiozero", "gpio")):
+        try:
+            __import__(module)
+        except Exception as e:
+            console.print(f"[yellow]{module}: not available ({e}) - uv sync --extra {extra}[/yellow]")
+        else:
+            console.print(f"[green]{module}: available[/green]")
+
+    for err in cfg.validate():
+        if err.startswith("input."):
+            console.print(f"[red]{err}[/red]")
 
 
 if __name__ == "__main__":
