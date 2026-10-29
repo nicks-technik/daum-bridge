@@ -71,6 +71,10 @@ class DaumBridge:
         self._last_email_result = None
         self._strava_thread = None
         self._email_thread = None
+        self._inputs = []
+        self._input_problems = []
+        self._last_shift_source: Optional[str] = None
+        self._last_shift_at = 0.0
 
 
     def add_state_callback(self, cb: Callable[[DaumState], None]):
@@ -378,9 +382,49 @@ class DaumBridge:
                     log.warning("Failed to start ANT+ backend: %s", e)
         except Exception as e:
             log.debug("ANT+ backend not started: %s", e)
+        # Start handlebar shift buttons (best effort; missing hardware is logged)
+        self._start_inputs()
+
+    def _start_inputs(self):
+        """Start the configured handlebar shift buttons, if any."""
+        try:
+            from .inputs import build_inputs
+
+            self._inputs, self._input_problems = build_inputs(self.config, self._on_input_shift)
+        except Exception as e:
+            self._inputs = []
+            self._input_problems = [str(e)]
+            log.warning("Shift inputs not started: %s", e)
+
+    def _stop_inputs(self):
+        """Stop all shift inputs (safe to call more than once)."""
+        for item in self._inputs:
+            try:
+                item.stop()
+            except Exception as e:
+                log.debug("Could not stop shift input %s: %s", item, e)
+        self._inputs = []
+
+    def _on_input_shift(self, delta: int, source: str):
+        """Callback used by the shift-button backends."""
+        self.shift(delta, source)
+
+    def input_status(self) -> dict:
+        """Status of the physical shift buttons for the web UI/CLI."""
+        cfg = getattr(self.config, "input", None)
+        return {
+            "enabled": bool(getattr(cfg, "enabled", False)),
+            "backend": getattr(cfg, "backend", "none"),
+            "shift_clears_erg": bool(getattr(cfg, "shift_clears_erg", True)),
+            "active": [item.status() for item in self._inputs],
+            "problems": list(self._input_problems),
+            "last_source": self._last_shift_source,
+            "last_shift_at": self._last_shift_at or None,
+        }
 
     def stop(self):
         self._running = False
+        self._stop_inputs()
         try:
             self.finish_ride()
         except Exception as e:
@@ -536,11 +580,36 @@ class DaumBridge:
             except Exception as e:
                 log.debug("set_watt error: %s", e)
 
+    def shift(self, delta: int, source: str = "manual"):
+        """Shift gears by ``delta`` steps (+1 harder, -1 easier).
+
+        Handlebar buttons, the web UI and the CLI all go through here so they
+        behave identically. When ``input.shift_clears_erg`` is enabled (the
+        default) an active ERG target is released first: otherwise the cockpit
+        keeps holding the last target power and the gear change has no effect
+        on the load.
+        """
+        try:
+            step = int(delta)
+        except (TypeError, ValueError):
+            return
+        if step == 0:
+            return
+        input_cfg = getattr(self.config, "input", None)
+        if getattr(input_cfg, "shift_clears_erg", True) and (
+            self._target_watt != 0 or self._erg_control_granted
+        ):
+            self.set_target_watt(0)
+            self._erg_control_granted = False
+        self.set_gear(self._target_gear + step)
+        self._last_shift_source = str(source or "manual")
+        self._last_shift_at = time.time()
+
     def shift_up(self):
-        self.set_gear(self._target_gear + 1)
+        self.shift(1, "api")
 
     def shift_down(self):
-        self.set_gear(self._target_gear - 1)
+        self.shift(-1, "api")
 
     @property
     def max_gear(self) -> int:
