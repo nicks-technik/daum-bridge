@@ -50,14 +50,89 @@
             </div>
         </div>
         <div class="section">
-            <h2>ANT+</h2>
+            <h2>Resistance mapping</h2>
             <div class="form-group">
-                <label><input type="checkbox" id="antEnabled" style="width: auto;"> Enable ANT+ (FE-C)</label>
+                <label>Highest gear (FTMS/FE-C resistance is mapped onto gears 1..N)</label>
+                <input type="number" id="maxGear" value="20" min="2" max="28">
+            </div>
+        </div>
+        <div class="section">
+            <h2>ANT+ FE-C</h2>
+            <div class="form-group">
+                <label><input type="checkbox" id="antEnabled" style="width: auto;"> Broadcast an ANT+ FE-C trainer (in addition to BLE)</label>
             </div>
             <div class="form-group">
-                <label>Device Path (USB ANT stick)</label>
-                <input type="text" id="antDevice" placeholder="/dev/ttyUSB0">
+                <label>Device ID (0 = automatic)</label>
+                <input type="number" id="antDeviceId" value="0" min="0" max="65535">
             </div>
+            <div class="form-group">
+                <label>Network key (optional hex override)</label>
+                <input type="text" id="antNetworkKey" placeholder="B9 A5 21 FB BD 72 C3 45">
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">Requires the optional <code>openant</code> package (<code>uv sync --extra ant</code>) and an ANT USB stick. FE-C pages 16/17/25/54 are broadcast and control pages 48/49/50/51 are handled.</p>
+        </div>
+        <div class="section">
+            <h2>Strava</h2>
+            <div class="form-group">
+                <label>Client ID</label>
+                <input type="text" id="stravaClientId" placeholder="From https://www.strava.com/settings/api">
+            </div>
+            <div class="form-group">
+                <label>Client Secret (leave empty to keep current)</label>
+                <input type="password" id="stravaClientSecret" autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label>Refresh Token (leave empty to keep current)</label>
+                <input type="password" id="stravaRefreshToken" autocomplete="new-password" placeholder="Get one with: daum-bridge strava-auth">
+            </div>
+            <div class="form-group">
+                <label>Token cache file</label>
+                <input type="text" id="stravaTokenFile" value="strava.tokens.json">
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="stravaAutoUpload" style="width: auto;"> Upload rides automatically when they finish</label>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="stravaPrivate" style="width: auto;"> Upload activities as private</label>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">Ride history is stored locally. Use the History page to upload individual rides.</p>
+        </div>
+        <div class="section">
+            <h2>Email (TCX attachments)</h2>
+            <div class="form-group">
+                <label>SMTP host</label>
+                <input type="text" id="emailHost" placeholder="smtp.gmail.com">
+            </div>
+            <div class="form-group">
+                <label>SMTP port (587 = STARTTLS, 465 = SSL)</label>
+                <input type="number" id="emailPort" value="587" min="1" max="65535">
+            </div>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="emailUsername" autocomplete="username" placeholder="you@example.com">
+            </div>
+            <div class="form-group">
+                <label>Password / app password (leave empty to keep current)</label>
+                <input type="password" id="emailPassword" autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label>From address</label>
+                <input type="text" id="emailFrom" placeholder="you@example.com">
+            </div>
+            <div class="form-group">
+                <label>To address (comma-separated for multiple recipients)</label>
+                <input type="text" id="emailTo" placeholder="you@example.com">
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="emailAutoSend" style="width: auto;"> Email the TCX automatically when a ride finishes</label>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="emailUseTls" style="width: auto;"> Use STARTTLS (port 587)</label>
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="emailUseSsl" style="width: auto;"> Use implicit SSL (port 465)</label>
+            </div>
+            <p style="color: #94a3b8; font-size: 13px;">Every finished ride can be emailed as a TCX attachment from the Downloads page. For Gmail use an app password, not your account password.</p>
         </div>
         <div class="section">
             <h2>Logging</h2>
@@ -79,9 +154,27 @@
                 if (data.ble) document.getElementById('adapter').value = data.ble.adapter || 'hci0';
                 if (data.ant) {
                     document.getElementById('antEnabled').checked = !!data.ant.enabled;
-                    document.getElementById('antDevice').value = data.ant.device_path || '';
+                    document.getElementById('antDeviceId').value = data.ant.device_id ?? 0;
+                    document.getElementById('antNetworkKey').value = data.ant.network_key || '';
                 }
+                if (data.bridge) document.getElementById('maxGear').value = data.bridge.max_gear || 20;
                 if (data.logging) document.getElementById('logRaw').checked = !!data.logging.log_raw_frames;
+                if (data.strava) {
+                    document.getElementById('stravaClientId').value = data.strava.client_id || '';
+                    document.getElementById('stravaTokenFile').value = data.strava.token_file || 'strava.tokens.json';
+                    document.getElementById('stravaAutoUpload').checked = !!data.strava.auto_upload;
+                    document.getElementById('stravaPrivate').checked = !!data.strava.private;
+                }
+                if (data.email) {
+                    document.getElementById('emailHost').value = data.email.host || '';
+                    document.getElementById('emailPort').value = data.email.port || 587;
+                    document.getElementById('emailUsername').value = data.email.username || '';
+                    document.getElementById('emailFrom').value = data.email.from_addr || '';
+                    document.getElementById('emailTo').value = data.email.to_addr || '';
+                    document.getElementById('emailAutoSend').checked = !!data.email.auto_send;
+                    document.getElementById('emailUseTls').checked = !!data.email.use_tls;
+                    document.getElementById('emailUseSsl').checked = !!data.email.use_ssl;
+                }
             } catch(e) {}
         }
         async function save() {
@@ -97,10 +190,33 @@
                     },
                     ant: {
                         enabled: document.getElementById('antEnabled').checked,
-                        device_path: document.getElementById('antDevice').value || ''
+                        device_id: parseInt(document.getElementById('antDeviceId').value || '0', 10),
+                        network_key: document.getElementById('antNetworkKey').value || ''
+                    },
+                    bridge: {
+                        max_gear: parseInt(document.getElementById('maxGear').value || '20', 10)
                     },
                     logging: {
                         log_raw_frames: document.getElementById('logRaw').checked
+                    },
+                    strava: {
+                        client_id: document.getElementById('stravaClientId').value || '',
+                        client_secret: document.getElementById('stravaClientSecret').value || '',
+                        refresh_token: document.getElementById('stravaRefreshToken').value || '',
+                        token_file: document.getElementById('stravaTokenFile').value || 'strava.tokens.json',
+                        auto_upload: document.getElementById('stravaAutoUpload').checked,
+                        private: document.getElementById('stravaPrivate').checked
+                    },
+                    email: {
+                        host: document.getElementById('emailHost').value || '',
+                        port: parseInt(document.getElementById('emailPort').value) || 587,
+                        username: document.getElementById('emailUsername').value || '',
+                        password: document.getElementById('emailPassword').value || '',
+                        from_addr: document.getElementById('emailFrom').value || '',
+                        to_addr: document.getElementById('emailTo').value || '',
+                        auto_send: document.getElementById('emailAutoSend').checked,
+                        use_tls: document.getElementById('emailUseTls').checked,
+                        use_ssl: document.getElementById('emailUseSsl').checked
                     }
                 };
                 const res = await fetch('/api/config', {

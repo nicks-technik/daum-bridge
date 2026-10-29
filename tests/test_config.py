@@ -1,5 +1,15 @@
 from daum_bridge import config
-from daum_bridge.config import Config, SerialConfig, BridgeConfig, BLEConfig, WebConfig, LoggingConfig, get_env_overrides
+from daum_bridge.config import (
+    BLEConfig,
+    BridgeConfig,
+    Config,
+    EmailConfig,
+    LoggingConfig,
+    SerialConfig,
+    StravaConfig,
+    WebConfig,
+    get_env_overrides,
+)
 import os
 import tempfile
 from pathlib import Path
@@ -119,3 +129,144 @@ def test_get_env_overrides():
     finally:
         os.environ.clear()
         os.environ.update(old)
+
+
+def test_strava_config_defaults():
+    s = StravaConfig()
+    assert s.auto_upload is False
+    assert s.private is False
+    assert s.token_file == "strava.tokens.json"
+    assert s.poll_timeout == 120.0
+    assert s.refresh_token == ""
+
+
+def test_config_from_dict_strava():
+    c = Config.from_dict({
+        "strava": {
+            "auto_upload": True,
+            "private": True,
+            "client_id": "123",
+            "client_secret": "secret",
+            "refresh_token": "refresh",
+            "token_file": "custom.tokens.json",
+            "poll_timeout": 30,
+        }
+    })
+    assert c.strava.auto_upload is True
+    assert c.strava.private is True
+    assert c.strava.client_id == "123"
+    assert c.strava.refresh_token == "refresh"
+    assert c.strava.token_file == "custom.tokens.json"
+    assert c.strava.poll_timeout == 30.0
+
+
+def test_strava_env_overrides(monkeypatch):
+    monkeypatch.setenv("STRAVA_CLIENT_ID", "env-id")
+    monkeypatch.setenv("STRAVA_CLIENT_SECRET", "env-secret")
+    monkeypatch.setenv("STRAVA_REFRESH_TOKEN", "env-refresh")
+    monkeypatch.setenv("STRAVA_TOKENS_FILE", "env-tokens.json")
+    monkeypatch.setenv("STRAVA_AUTO_UPLOAD", "true")
+    monkeypatch.setenv("STRAVA_PRIVATE", "1")
+
+    c = get_env_overrides(Config())
+    assert c.strava.client_id == "env-id"
+    assert c.strava.client_secret == "env-secret"
+    assert c.strava.refresh_token == "env-refresh"
+    assert c.strava.token_file == "env-tokens.json"
+    assert c.strava.auto_upload is True
+    assert c.strava.private is True
+
+
+def test_strava_auto_upload_requires_credentials(monkeypatch):
+    monkeypatch.delenv("STRAVA_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("STRAVA_ACCESS_TOKEN", raising=False)
+    c = Config()
+    c.strava.auto_upload = True
+    errs = c.validate()
+    assert any("strava" in e.lower() for e in errs)
+
+    c.strava.refresh_token = "refresh"
+    assert not any("strava" in e.lower() for e in c.validate())
+
+
+def test_email_config_defaults():
+    e = EmailConfig()
+    assert e.auto_send is False
+    assert e.host == ""
+    assert e.port == 587
+    assert e.use_tls is True
+    assert e.use_ssl is False
+    assert e.subject_prefix == "Daum training"
+    assert e.is_configured() is False
+
+
+def test_config_from_dict_email():
+    c = Config.from_dict({
+        "email": {
+            "auto_send": True,
+            "host": "smtp.gmail.com",
+            "port": 465,
+            "username": "me@gmail.com",
+            "password": "app-password",
+            "from_addr": "me@gmail.com",
+            "to_addr": "me@gmail.com",
+            "use_tls": False,
+            "use_ssl": True,
+            "subject_prefix": "Ride",
+        }
+    })
+    assert c.email.auto_send is True
+    assert c.email.host == "smtp.gmail.com"
+    assert c.email.port == 465
+    assert c.email.username == "me@gmail.com"
+    assert c.email.password == "app-password"
+    assert c.email.from_addr == "me@gmail.com"
+    assert c.email.to_addr == "me@gmail.com"
+    assert c.email.use_tls is False
+    assert c.email.use_ssl is True
+    assert c.email.subject_prefix == "Ride"
+    assert c.email.is_configured() is True
+
+
+def test_email_env_overrides(monkeypatch):
+    monkeypatch.setenv("DAUM_EMAIL_HOST", "smtp.env.test")
+    monkeypatch.setenv("DAUM_EMAIL_PORT", "2525")
+    monkeypatch.setenv("DAUM_EMAIL_USER", "env-user")
+    monkeypatch.setenv("DAUM_EMAIL_PASSWORD", "env-pass")
+    monkeypatch.setenv("DAUM_EMAIL_FROM", "from@env.test")
+    monkeypatch.setenv("DAUM_EMAIL_TO", "to@env.test")
+    monkeypatch.setenv("DAUM_EMAIL_AUTO_SEND", "yes")
+    monkeypatch.setenv("DAUM_EMAIL_TLS", "false")
+    monkeypatch.setenv("DAUM_EMAIL_SSL", "true")
+
+    c = get_env_overrides(Config())
+
+    assert c.email.host == "smtp.env.test"
+    assert c.email.port == 2525
+    assert c.email.username == "env-user"
+    assert c.email.password == "env-pass"
+    assert c.email.from_addr == "from@env.test"
+    assert c.email.to_addr == "to@env.test"
+    assert c.email.auto_send is True
+    assert c.email.use_tls is False
+    assert c.email.use_ssl is True
+
+
+def test_email_auto_send_requires_settings(monkeypatch):
+    monkeypatch.delenv("DAUM_EMAIL_HOST", raising=False)
+    monkeypatch.delenv("DAUM_EMAIL_TO", raising=False)
+    c = Config()
+    c.email.auto_send = True
+    errs = c.validate()
+    assert any("email" in e.lower() for e in errs)
+
+    c.email.host = "smtp.example.com"
+    c.email.to_addr = "me@example.com"
+    assert not any("email" in e.lower() for e in c.validate())
+
+
+def test_email_tls_and_ssl_conflict():
+    c = Config()
+    c.email.use_tls = True
+    c.email.use_ssl = True
+    assert any("email" in e.lower() for e in c.validate())
