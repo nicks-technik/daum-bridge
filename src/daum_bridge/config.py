@@ -1,3 +1,17 @@
+"""Configuration model and YAML loading.
+
+The bridge is configured from ``config.yaml`` (optionally overridden by
+``DAUM_*`` environment variables). Parsing has to be forgiving: a rider editing
+the file by hand will eventually write a string where a number belongs, leave a
+section empty, or mistype one field. The bridge must still start and must still
+use every setting it *could* understand.
+
+Each ``config.yaml`` section therefore has its own ``_parse_*`` function below.
+Keeping them separate (instead of one long ``from_dict``) has two effects:
+a broken value only resets its own section, and the mapping between YAML keys
+and dataclass fields is readable without counting ``if`` blocks.
+"""
+
 from __future__ import annotations
 
 import os
@@ -5,6 +19,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .numbers import as_float, as_int
 
 log = logging.getLogger(__name__)
 
@@ -46,20 +62,43 @@ def dump_yaml_file(path, data: dict) -> None:
         _yaml_dump(data, f)
 
 
-def _cfg_int(value, default: int) -> int:
-    """Best-effort int conversion that never aborts config parsing."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+def _cfg_str(value, default: str = "") -> str:
+    """Return ``value`` as a string, falling back to ``default`` when empty.
+
+    ``None`` and the empty string both mean "not configured"; treating them the
+    same way keeps the defaults written here in one place instead of repeating
+    ``or "fallback"`` at every call site.
+    """
+    if value is None:
         return default
+    text = str(value)
+    return text if text else default
 
 
-def _cfg_float(value, default: float) -> float:
-    """Best-effort float conversion that never aborts config parsing."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+def _cfg_bool(value, default: bool = False) -> bool:
+    """Return ``value`` as a bool, accepting the usual textual spellings.
+
+    YAML already turns ``true``/``false`` into booleans, but values can also
+    arrive as strings from a JSON payload or ``"0"``/``"no"`` in a hand-edited
+    file. Plain ``bool("false")`` would be ``True``, which is never what the
+    rider meant, so the textual forms are interpreted explicitly.
+    """
+    if value is None:
         return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _section(data: dict, name: str) -> dict:
+    """Return the mapping stored under ``name``, or an empty dict.
+
+    A section that is missing, ``null`` or accidentally a scalar is treated as
+    empty, so the caller keeps its defaults instead of raising.
+    """
+    value = data.get(name)
+    return value if isinstance(value, dict) else {}
+
 
 
 @dataclass
@@ -183,6 +222,143 @@ class LoggingConfig:
     log_raw_frames: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Section parsers
+#
+# One function per ``config.yaml`` section. Each one starts from a default
+# instance and only overwrites the keys that are actually present, so the
+# defaults live in the dataclass and are never repeated here. Every conversion
+# is guarded: a bad value (``baudrate: fast``, ``port: null``) falls back to the
+# default for that single field instead of raising.
+# ---------------------------------------------------------------------------
+
+
+def _parse_serial(section: dict) -> SerialConfig:
+    """Build :class:`SerialConfig` from the ``serial`` section."""
+    config = SerialConfig()
+    config.port = _cfg_str(section.get("port"), config.port)
+    config.baudrate = as_int(section.get("baudrate"), config.baudrate)
+    config.timeout = as_float(section.get("timeout"), config.timeout)
+    config.bytesize = as_int(section.get("bytesize"), config.bytesize)
+    config.parity = _cfg_str(section.get("parity"), config.parity)
+    config.stopbits = as_int(section.get("stopbits"), config.stopbits)
+    return config
+
+
+def _parse_bridge(section: dict) -> BridgeConfig:
+    """Build :class:`BridgeConfig` from the ``bridge`` section."""
+    config = BridgeConfig()
+    config.poll_interval = as_float(section.get("poll_interval"), config.poll_interval)
+    config.reconnect_delay = as_float(section.get("reconnect_delay"), config.reconnect_delay)
+    # ``or`` keeps the historical behaviour: max_gear of 0 means "unset".
+    config.max_gear = as_int(section.get("max_gear") or config.max_gear, config.max_gear)
+    return config
+
+
+def _parse_ble(section: dict) -> BLEConfig:
+    """Build :class:`BLEConfig` from the ``ble`` section."""
+    config = BLEConfig()
+    config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
+    config.adapter = _cfg_str(section.get("adapter"), config.adapter)
+    config.device_name = _cfg_str(section.get("device_name"), config.device_name)
+    return config
+
+
+def _parse_ant(section: dict) -> ANTConfig:
+    """Build :class:`ANTConfig` from the ``ant`` section."""
+    config = ANTConfig()
+    config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
+    config.device_id = as_int(section.get("device_id"), config.device_id)
+    config.network_key = _cfg_str(section.get("network_key"), config.network_key)
+    return config
+
+
+def _parse_strava(section: dict) -> StravaConfig:
+    """Build :class:`StravaConfig` from the ``strava`` section."""
+    config = StravaConfig()
+    config.auto_upload = _cfg_bool(section.get("auto_upload"), config.auto_upload)
+    config.client_id = _cfg_str(section.get("client_id"), config.client_id)
+    config.client_secret = _cfg_str(section.get("client_secret"), config.client_secret)
+    config.refresh_token = _cfg_str(section.get("refresh_token"), config.refresh_token)
+    config.access_token = _cfg_str(section.get("access_token"), config.access_token)
+    config.token_file = _cfg_str(section.get("token_file"), config.token_file)
+    config.private = _cfg_bool(section.get("private"), config.private)
+    config.poll_timeout = as_float(section.get("poll_timeout"), config.poll_timeout)
+    return config
+
+
+def _parse_email(section: dict) -> EmailConfig:
+    """Build :class:`EmailConfig` from the ``email`` section."""
+    config = EmailConfig()
+    config.auto_send = _cfg_bool(section.get("auto_send"), config.auto_send)
+    config.host = _cfg_str(section.get("host"), config.host)
+    config.port = as_int(section.get("port"), config.port)
+    config.username = _cfg_str(section.get("username"), config.username)
+    config.password = _cfg_str(section.get("password"), config.password)
+    config.from_addr = _cfg_str(section.get("from_addr"), config.from_addr)
+    config.to_addr = _cfg_str(section.get("to_addr"), config.to_addr)
+    config.use_tls = _cfg_bool(section.get("use_tls"), config.use_tls)
+    config.use_ssl = _cfg_bool(section.get("use_ssl"), config.use_ssl)
+    config.subject_prefix = _cfg_str(section.get("subject_prefix"), config.subject_prefix)
+    config.timeout = as_float(section.get("timeout"), config.timeout)
+    return config
+
+
+def _parse_web(section: dict) -> WebConfig:
+    """Build :class:`WebConfig` from the ``web`` section."""
+    config = WebConfig()
+    config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
+    config.host = _cfg_str(section.get("host"), config.host)
+    config.port = as_int(section.get("port"), config.port)
+    return config
+
+
+def _parse_gpio_input(section: dict) -> GPIOInputConfig:
+    """Build :class:`GPIOInputConfig` from the ``input.gpio`` sub-section."""
+    config = GPIOInputConfig()
+    config.up_pin = as_int(section.get("up_pin"), config.up_pin)
+    config.down_pin = as_int(section.get("down_pin"), config.down_pin)
+    config.bounce_time = as_float(section.get("bounce_time"), config.bounce_time)
+    config.active_low = _cfg_bool(section.get("active_low"), config.active_low)
+    return config
+
+
+def _parse_evdev_input(section: dict) -> EvdevInputConfig:
+    """Build :class:`EvdevInputConfig` from the ``input.evdev`` sub-section."""
+    config = EvdevInputConfig()
+    config.device = _cfg_str(section.get("device"), config.device)
+    config.up_key = _cfg_str(section.get("up_key"), config.up_key)
+    config.down_key = _cfg_str(section.get("down_key"), config.down_key)
+    return config
+
+
+def _parse_input(section: dict) -> InputConfig:
+    """Build :class:`InputConfig` from the ``input`` section.
+
+    ``gpio`` and ``evdev`` are nested sections; both are optional and each is
+    parsed independently so a typo in one does not discard the other.
+    """
+    config = InputConfig()
+    config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
+    config.backend = _cfg_str(section.get("backend"), config.backend).strip().lower()
+    config.shift_clears_erg = _cfg_bool(section.get("shift_clears_erg"), config.shift_clears_erg)
+    config.repeat_delay = as_float(section.get("repeat_delay"), config.repeat_delay)
+    config.repeat_interval = as_float(section.get("repeat_interval"), config.repeat_interval)
+    config.min_interval = as_float(section.get("min_interval"), config.min_interval)
+    config.gpio = _parse_gpio_input(_section(section, "gpio"))
+    config.evdev = _parse_evdev_input(_section(section, "evdev"))
+    return config
+
+
+def _parse_logging(section: dict) -> LoggingConfig:
+    """Build :class:`LoggingConfig` from the ``logging`` section."""
+    config = LoggingConfig()
+    config.level = _cfg_str(section.get("level"), config.level)
+    config.log_raw_frames = _cfg_bool(section.get("log_raw_frames"), config.log_raw_frames)
+    return config
+
+
+
 @dataclass
 class Config:
     serial: SerialConfig = field(default_factory=SerialConfig)
@@ -197,106 +373,44 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
+        """Build a :class:`Config` from a parsed YAML/JSON mapping.
+
+        Every section is optional and is parsed independently. A value that
+        cannot be converted only resets the field it belongs to: a broken
+        ``serial.baudrate`` no longer discards the ``ble``, ``ant``, ``strava``,
+        ``email`` and ``input`` sections that follow it in the file.
+        """
         cfg = cls()
         if not data:
             return cfg
-        try:
-            if "serial" in data and isinstance(data["serial"], dict):
-                s = data["serial"]
-                cfg.serial = SerialConfig(
-                    port=str(s.get("port", "") or ""),
-                    baudrate=int(s.get("baudrate", 9600)),
-                    timeout=float(s.get("timeout", 1.0)),
-                    bytesize=int(s.get("bytesize", 8)),
-                    parity=str(s.get("parity", "N")),
-                    stopbits=int(s.get("stopbits", 1)),
-                )
-            if "bridge" in data and isinstance(data["bridge"], dict):
-                b = data["bridge"]
-                cfg.bridge = BridgeConfig(
-                    poll_interval=float(b.get("poll_interval", 0.5)),
-                    reconnect_delay=float(b.get("reconnect_delay", 2.0)),
-                    max_gear=int(b.get("max_gear", 20) or 20),
-                )
-            if "ble" in data and isinstance(data["ble"], dict):
-                bl = data["ble"]
-                cfg.ble = BLEConfig(
-                    enabled=bool(bl.get("enabled", True)),
-                    adapter=str(bl.get("adapter", "hci0")),
-                    device_name=str(bl.get("device_name", "DAUM-8008-TRS")),
-                )
-            if "ant" in data and isinstance(data["ant"], dict):
-                a = data["ant"]
-                cfg.ant = ANTConfig(
-                    enabled=bool(a.get("enabled", False)),
-                    device_id=int(a.get("device_id", 0) or 0),
-                    network_key=str(a.get("network_key", "") or ""),
-                )
-            if "strava" in data and isinstance(data["strava"], dict):
-                st = data["strava"]
-                cfg.strava = StravaConfig(
-                    auto_upload=bool(st.get("auto_upload", False)),
-                    client_id=str(st.get("client_id", "") or ""),
-                    client_secret=str(st.get("client_secret", "") or ""),
-                    refresh_token=str(st.get("refresh_token", "") or ""),
-                    access_token=str(st.get("access_token", "") or ""),
-                    token_file=str(st.get("token_file", "strava.tokens.json") or "strava.tokens.json"),
-                    private=bool(st.get("private", False)),
-                    poll_timeout=float(st.get("poll_timeout") or 120.0),
-                )
-            if "email" in data and isinstance(data["email"], dict):
-                em = data["email"]
-                cfg.email = EmailConfig(
-                    auto_send=bool(em.get("auto_send", False)),
-                    host=str(em.get("host", "") or ""),
-                    port=int(em.get("port", 587) or 587),
-                    username=str(em.get("username", "") or ""),
-                    password=str(em.get("password", "") or ""),
-                    from_addr=str(em.get("from_addr", "") or ""),
-                    to_addr=str(em.get("to_addr", "") or ""),
-                    use_tls=bool(em.get("use_tls", True)),
-                    use_ssl=bool(em.get("use_ssl", False)),
-                    subject_prefix=str(em.get("subject_prefix", "Daum training") or "Daum training"),
-                    timeout=float(em.get("timeout", 30.0) or 30.0),
-                )
-            if "web" in data and isinstance(data["web"], dict):
-                w = data["web"]
-                cfg.web = WebConfig(
-                    enabled=bool(w.get("enabled", True)),
-                    host=str(w.get("host", "0.0.0.0")),
-                    port=int(w.get("port", 8080)),
-                )
-            if "input" in data and isinstance(data["input"], dict):
-                inp = data["input"]
-                gpio = inp.get("gpio") if isinstance(inp.get("gpio"), dict) else {}
-                evdev = inp.get("evdev") if isinstance(inp.get("evdev"), dict) else {}
-                cfg.input = InputConfig(
-                    enabled=bool(inp.get("enabled", False)),
-                    backend=str(inp.get("backend", "both") or "both").strip().lower(),
-                    shift_clears_erg=bool(inp.get("shift_clears_erg", True)),
-                    repeat_delay=_cfg_float(inp.get("repeat_delay"), 0.45),
-                    repeat_interval=_cfg_float(inp.get("repeat_interval"), 0.12),
-                    min_interval=_cfg_float(inp.get("min_interval"), 0.10),
-                    gpio=GPIOInputConfig(
-                        up_pin=_cfg_int(gpio.get("up_pin"), 17),
-                        down_pin=_cfg_int(gpio.get("down_pin"), 27),
-                        bounce_time=_cfg_float(gpio.get("bounce_time"), 0.05),
-                        active_low=bool(gpio.get("active_low", True)),
-                    ),
-                    evdev=EvdevInputConfig(
-                        device=str(evdev.get("device", "") or ""),
-                        up_key=str(evdev.get("up_key") or "KEY_VOLUMEUP"),
-                        down_key=str(evdev.get("down_key") or "KEY_VOLUMEDOWN"),
-                    ),
-                )
-            if "logging" in data and isinstance(data["logging"], dict):
-                lg = data["logging"]
-                cfg.logging = LoggingConfig(
-                    level=str(lg.get("level", "INFO")),
-                    log_raw_frames=bool(lg.get("log_raw_frames", False)),
-                )
-        except Exception as e:
-            log.warning(f"Config parsing error, using defaults: {e}")
+
+        serial = _section(data, "serial")
+        if serial:
+            cfg.serial = _parse_serial(serial)
+        bridge = _section(data, "bridge")
+        if bridge:
+            cfg.bridge = _parse_bridge(bridge)
+        ble = _section(data, "ble")
+        if ble:
+            cfg.ble = _parse_ble(ble)
+        ant = _section(data, "ant")
+        if ant:
+            cfg.ant = _parse_ant(ant)
+        strava = _section(data, "strava")
+        if strava:
+            cfg.strava = _parse_strava(strava)
+        email = _section(data, "email")
+        if email:
+            cfg.email = _parse_email(email)
+        web = _section(data, "web")
+        if web:
+            cfg.web = _parse_web(web)
+        input_section = _section(data, "input")
+        if input_section:
+            cfg.input = _parse_input(input_section)
+        logging_section = _section(data, "logging")
+        if logging_section:
+            cfg.logging = _parse_logging(logging_section)
         return cfg
 
     def validate(self) -> list:
@@ -438,9 +552,11 @@ def get_env_overrides(cfg: Config) -> Config:
     if os.environ.get("DAUM_INPUT_BACKEND"):
         cfg.input.backend = os.environ["DAUM_INPUT_BACKEND"].strip().lower()
     if os.environ.get("DAUM_GPIO_UP_PIN"):
-        cfg.input.gpio.up_pin = _cfg_int(os.environ["DAUM_GPIO_UP_PIN"], cfg.input.gpio.up_pin)
+        cfg.input.gpio.up_pin = as_int(
+            os.environ["DAUM_GPIO_UP_PIN"], cfg.input.gpio.up_pin
+        )
     if os.environ.get("DAUM_GPIO_DOWN_PIN"):
-        cfg.input.gpio.down_pin = _cfg_int(
+        cfg.input.gpio.down_pin = as_int(
             os.environ["DAUM_GPIO_DOWN_PIN"], cfg.input.gpio.down_pin
         )
     if os.environ.get("DAUM_INPUT_DEVICE"):
