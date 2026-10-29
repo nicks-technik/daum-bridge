@@ -1,3 +1,13 @@
+"""Discovery helpers for the USB serial adapter behind the Daum cockpit.
+
+The Daum 8008 TRS speaks RS232 over its original cable, which reaches the
+computer through an RS232-to-USB adapter. Those adapters do not announce
+themselves in a standardised way, so :func:`auto_detect_daum_port` applies a
+name-based heuristic and falls back to the first available port. Users whose
+adapter is not recognised can always pin the port in ``config.yaml``
+(``serial.port``) and skip detection entirely.
+"""
+
 from __future__ import annotations
 
 import logging
