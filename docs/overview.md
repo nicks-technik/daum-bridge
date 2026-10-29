@@ -1,6 +1,6 @@
 # Overview
 
-See also: [installation.md](installation.md), [protocol.md](protocol.md), [glossary.md](glossary.md)
+See also: [installation.md](installation.md), [protocol.md](protocol.md), [strava.md](strava.md), [email.md](email.md), [glossary.md](glossary.md)
 
 ## Architecture
 ```
@@ -12,7 +12,9 @@ See also: [installation.md](installation.md), [protocol.md](protocol.md), [gloss
 
 ## Components
 - serial/: Protocol implementation and port handling
-- bridge.py: Core orchestration
+- bridge.py: Core orchestration and ride recording
+- history.py: Ride persistence (`rides/*.json`, `rides/*.tcx`)
+- integrations/: TCX generation, Strava upload and email delivery
 - backends/ble_ftms.py: BLE FTMS peripheral (Linux)
 - web/: FastAPI web UI
 - cli.py: Typer CLI
@@ -23,6 +25,9 @@ See also: [installation.md](installation.md), [protocol.md](protocol.md), [gloss
 3. Expose via BLE FTMS and web UI
 4. Forward target power via set_Watt
 5. Gear shifts via web UI
+6. Record power/cadence/heart rate/distance once per second; save the ride when the bike
+   disconnects, the bridge stops, or *Finish Ride* is pressed
+7. Optionally upload/email the ride as TCX (manual download, API upload or email attachment)
 
 ## Platform Notes
 - Linux (primary)

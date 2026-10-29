@@ -14,6 +14,8 @@ serial:
 bridge:
   poll_interval: 0.5  # seconds for run_Data polling
   reconnect_delay: 2.0
+  # Highest gear used when FTMS/FE-C resistance is translated to Daum gears.
+  max_gear: 20
 
 ble:
   enabled: true
@@ -21,10 +23,51 @@ ble:
   device_name: "DAUM-8008-TRS"
   # FTMS service/characteristics handled internally
 
+ant:
+  # Broadcast as an ANT+ FE-C trainer (device type 17) in addition to BLE.
+  # Requires the optional openant package: uv sync --extra ant
+  enabled: false
+  # ANT device number (0 = automatic). Also settable via DAUM_ANT_DEVICE_ID.
+  device_id: 0
+  # Optional hex override of the ANT+ public network key, e.g.
+  # "B9 A5 21 FB BD 72 C3 45" (default when empty).
+  network_key: ""
+
 web:
   enabled: true
   host: "0.0.0.0"
   port: 8080
+
+strava:
+  # Upload rides automatically when they finish (uses saved credentials).
+  auto_upload: false
+  # Upload activities as private (only visible to you).
+  private: false
+  # Strava API application credentials: https://www.strava.com/settings/api
+  # Alternatively set STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET.
+  client_id: ""
+  client_secret: ""
+  # Obtain with: uv run daum-bridge strava-auth --write-config
+  # (or export STRAVA_REFRESH_TOKEN). The refresh token is required.
+  refresh_token: ""
+  # Refreshed access tokens are cached here (add to .gitignore).
+  token_file: "strava.tokens.json"
+  # How long to wait for Strava to process an upload (seconds).
+  poll_timeout: 120
+
+email:
+  # Email each finished ride as a TCX attachment.
+  auto_send: false
+  # SMTP server (e.g. smtp.gmail.com). Alternatively set DAUM_EMAIL_* vars.
+  host: ""
+  port: 587          # 587 = STARTTLS, 465 = implicit SSL
+  username: ""
+  password: ""       # use an app password for Gmail
+  from_addr: ""
+  to_addr: ""        # comma-separated recipients allowed
+  use_tls: true      # STARTTLS
+  use_ssl: false     # implicit TLS (set true for port 465)
+  subject_prefix: "Daum training"
 
 logging:
   level: "INFO"

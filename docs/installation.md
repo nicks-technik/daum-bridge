@@ -116,6 +116,11 @@ For development:
 uv sync --dev
 ```
 
+With the optional ANT+ FE-C backend:
+```bash
+uv sync --extra ant
+```
+
 ### Configure
 ```bash
 cp config.example.yaml config.yaml
@@ -126,6 +131,8 @@ You can also use environment variables:
 - `DAUM_SERIAL_PORT`
 - `DAUM_BLE_NAME`
 - `DAUM_WEB_PORT`
+- `DAUM_MAX_GEAR` (highest gear for resistance mapping, default 20)
+- `DAUM_ANT_ENABLED`, `DAUM_ANT_DEVICE_ID`, `DAUM_ANT_NETWORK_KEY`
 
 ### Run
 ```bash
@@ -209,10 +216,50 @@ sudo hciconfig hci0 down
 sudo hciconfig hci0 up
 ```
 
+## ANT+ FE-C (optional)
+
+In addition to BLE FTMS the bridge can act as an ANT+ FE-C trainer. Install
+the optional dependency and enable it in `config.yaml`:
+
+```bash
+uv sync --extra ant
+```
+
+```yaml
+ant:
+  enabled: true
+  device_id: 0        # 0 = automatic
+  network_key: ""     # empty = ANT+ public key (B9 A5 21 FB BD 72 C3 45)
+```
+
+The backend opens a master channel for device type 17 (4 Hz) and broadcasts
+pages 16 (General FE Data), 17 (General Settings), 25 (Specific Trainer Data)
+and 54 (FE Capabilities). Control pages are decoded and applied to the bike:
+
+| Page | Request | Applied as |
+| --- | --- | --- |
+| 49 | Target power | `set_target_watt()` (ERG) |
+| 48 | Basic resistance | resistance % → gear |
+| 51 | Track resistance | grade % → resistance % → gear |
+| 50 | Wind resistance | not supported (command status reports it) |
+
+Page 71 (Command Status) reports the result of the last control page. If
+`openant` is not installed the backend logs a warning and BLE remains active.
+
+ANT USB sticks usually need permissions. Add a udev rule (adjust the vendor
+ID, e.g. Dynastream 0fcf) or run as a user in the `plugdev` group:
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0fcf", MODE="0666"' | \
+  sudo tee /etc/udev/rules.d/51-ant-usb.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
 ## Web UI
 Open `http://<bridge-ip>:8080` for status and gear shifting.
 
 ## Notes
 - BLE FTMS peripheral requires BlueZ on Linux. See [overview.md](overview.md) for details.
 - MyWhoosh pairs as a BLE FTMS trainer device.
+- The optional ANT+ FE-C backend requires `uv sync --extra ant`, a USB ANT stick and device permissions.
 - For protocol details, see [protocol.md](protocol.md).
