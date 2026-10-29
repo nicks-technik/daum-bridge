@@ -35,6 +35,11 @@ config.yaml
 config.yml
 *.local.yaml
 
+# Recorded rides and Strava OAuth tokens (contain personal data)
+rides/
+strava.tokens.json
+strava.tokens.json.tmp
+
 # Logs
 *.log
 
