@@ -48,18 +48,6 @@ wheels = [
 ]
 
 [[package]]
-name = "bluez-peripheral"
-version = "0.1.7"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "dbus-next" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/d0/fc2c16fce153947204a034a3f55d0c516db3195ad7f9757cb6672a16ee95/bluez_peripheral-0.1.7.tar.gz", hash = "sha256:0aff5eca62eb1acaf85edd39d4faa2ab4ffcb7f239fc12c5b79472e3781bc0f9", size = 30064, upload-time = "2022-12-19T20:08:48.74Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4c/d1/f624ba6f9c1475230eddc1c3a5f802710afeafbe508ae1851af131816d55/bluez_peripheral-0.1.7-py3-none-any.whl", hash = "sha256:79a39c32216c20f5e8cfcd5567cf093273811c614b3d70423b4e4ee814b21cea", size = 24522, upload-time = "2022-12-19T20:08:47.684Z" },
-]
-
-[[package]]
 name = "certifi"
 version = "2026.10.23"
 source = { registry = "https://pypi.org/simple" }
@@ -353,10 +341,9 @@ wheels = [
 
 [[package]]
 name = "daum-bridge"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
-    { name = "bluez-peripheral" },
     { name = "dbus-next" },
     { name = "fastapi" },
     { name = "jinja2" },
@@ -366,6 +353,11 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "typer" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+ant = [
+    { name = "openant" },
 ]
 
 [package.dev-dependencies]
@@ -379,10 +371,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bluez-peripheral", specifier = ">=0.1.7" },
     { name = "dbus-next", specifier = ">=0.2.3" },
     { name = "fastapi", specifier = ">=0.111.0" },
     { name = "jinja2", specifier = ">=3.1.4" },
+    { name = "openant", marker = "extra == 'ant'", specifier = ">=1.3.4" },
     { name = "pyserial", specifier = ">=3.5" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "rich", specifier = ">=13.7.1" },
@@ -390,6 +382,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12.3" },
     { name = "uvicorn", specifier = ">=0.30.1" },
 ]
+provides-extras = ["ant"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -671,6 +664,18 @@ wheels = [
 ]
 
 [[package]]
+name = "openant"
+version = "1.3.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyusb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/64/433c8bdc697ad816f0e9525ec76daa85c8f2f90ee944359b1ff557041ecc/openant-1.3.4.tar.gz", hash = "sha256:58961e8b853fec98a0c24697ac5bb5352b4b58e4a4a82f51f037f6c04accd58f", size = 114713, upload-time = "2025-08-19T07:03:48.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/ad/b42fde715b499b5303c846db225ed5bfb8b88d9cf0ac60fc9bd61b00c46e/openant-1.3.4-py3-none-any.whl", hash = "sha256:b224967961901fe225728eef0f6271f430e9c40c60a5c8190a1492d876c2250f", size = 91622, upload-time = "2025-08-19T07:03:46.766Z" },
+]
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.45.1"
 source = { registry = "https://pypi.org/simple" }
@@ -934,6 +939,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+]
+
+[[package]]
+name = "pyusb"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/6b/ce3727395e52b7b76dfcf0c665e37d223b680b9becc60710d4bc08b7b7cb/pyusb-1.3.1.tar.gz", hash = "sha256:3af070b607467c1c164f49d5b0caabe8ac78dbed9298d703a8dbf9df4052d17e", size = 77281, upload-time = "2025-01-08T23:45:01.866Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl", hash = "sha256:bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430", size = 58465, upload-time = "2025-01-08T23:45:00.029Z" },
 ]
 
 [[package]]
