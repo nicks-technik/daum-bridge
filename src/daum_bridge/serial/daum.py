@@ -14,13 +14,13 @@ log = logging.getLogger(__name__)
 
 
 class DaumCmd(Enum):
-    GET_ADDRESS = 0xA1
-    GET_PERSON_DATA = 0xA2
-    RUN_DATA = 0xA4
-    SET_WATT = 0xA6
-    SET_GEAR = 0xA7
-    SET_PROG = 0xA9
-    SET_WATT_PROFILE = 0xAA
+    GET_ADDRESS = 0x11  # 'get_Adress' in daumUSB.js
+    GET_PERSON_DATA = 0x74  # 'get_PersonData' in daumUSB.js
+    RUN_DATA = 0x40  # 'run_Data' in daumUSB.js
+    SET_WATT = 0x51  # 'set_Watt' in daumUSB.js
+    SET_GEAR = 0x53  # 'set_Gear' in daumUSB.js
+    SET_PROG = 0x23  # 'set_Prog' in daumUSB.js
+    SET_WATT_PROFILE = 0x68  # 'set_WattProfile' in daumUSB.js
 
 
 @dataclass
@@ -81,11 +81,16 @@ class DaumProtocol:
             return bytes([cmd.value])
         if address is None:
             address = self._address if self._address is not None else 0
-        if data is None or data == 0 and cmd not in (DaumCmd.SET_WATT, DaumCmd.SET_GEAR, DaumCmd.SET_PROG, DaumCmd.SET_WATT_PROFILE):
-            # For simple commands without data
+        # In daumUSB.js style: if no data (or 'none'), send cmd + addr
+        if data is None:
+            return bytes([cmd.value, address & 0xFF])
+        if isinstance(data, int) and data == 0 and cmd not in (DaumCmd.SET_WATT, DaumCmd.SET_GEAR, DaumCmd.SET_PROG, DaumCmd.SET_WATT_PROFILE):
             return bytes([cmd.value, address & 0xFF])
         else:
-            return bytes([cmd.value, address & 0xFF, int(data) & 0xFF])
+            if isinstance(data, int):
+                # For SET_WATT, some firmwares take single byte; ensure we send as byte
+                return bytes([cmd.value, address & 0xFF, int(data) & 0xFF])
+            return bytes([cmd.value, address & 0xFF])
 
     def request_address(self):
         log.info("Requesting Daum cockpit address...")
@@ -113,7 +118,10 @@ class DaumProtocol:
             return
         watts = max(0, int(watts))
         watts = min(800, watts)
-        self._write(self.build_command(DaumCmd.SET_WATT, self._address, watts))
+        # Try daumUSB.js style: ergopower = round(watts/5)
+        ergopower = int(round(watts / 5.0))
+        ergopower = max(0, min(255, ergopower))
+        self._write(self.build_command(DaumCmd.SET_WATT, self._address, ergopower))
 
     def set_gear(self, gear: int):
         if not self._address_found or self._address is None:
@@ -143,81 +151,136 @@ class DaumProtocol:
         consumed = 0
         while i < n:
             b = states[i]
-            # Address discovery
-            if b == 0xA1 and not self._address_found and i + 1 < n:
-                addr = states[i + 1]
-                self._address = addr
-                self._address_found = True
-                self.state.cockpit_address = addr
-                self.state.connected = True
-                log.info("Found Daum cockpit address: 0x%02X", addr)
-                consumed = max(consumed, i + 2)
-                i += 2
-                continue
-            # Person data
-            if self._address_found and self._address is not None and b == 0xA2 and i + 2 < n:
-                addr_byte = states[i + 1]
-                try:
-                    if addr_byte == self._address:
-                        idx = i
-                        for off in [5, 6, 7, 8, 9, 4, 10]:
-                            if idx + off < n:
-                                hr = states[idx + off]
-                                if isinstance(hr, int) and 40 <= hr <= 220:
-                                    self.state.heart_rate = int(hr)
-                                    break
-                        consumed = max(consumed, i + 12)
-                        i += 1
-                        continue
-                except Exception:
-                    pass
-            # run_data
-            if self._address_found and self._address is not None and b == 0xA4 and i + 2 < n:
-                addr_byte = states[i + 1]
-                try:
-                    if addr_byte == self._address and states[i + 2] == 0:
-                        idx = i
-                        try:
-                            if idx + 6 < n:
-                                rpm = states[idx + 6]
-                                if isinstance(rpm, int) and 0 <= rpm <= 200:
-                                    self.state.cadence = float(rpm)
-                            if idx + 5 < n:
-                                power_raw = states[idx + 5]
-                                if isinstance(power_raw, int):
-                                    if self.state.cadence == 0 or power_raw == 0:
-                                        self.state.power = 0.0
-                                    else:
-                                        self.state.power = float(power_raw) * 5.0
-                            if idx + 16 < n:
-                                gear = states[idx + 16]
-                                if isinstance(gear, int) and 1 <= gear <= 28:
-                                    self.state.gear = gear
-                            if idx + 7 < n:
-                                spd = states[idx + 7]
-                                if isinstance(spd, int) and 0 <= spd <= 150:
-                                    self.state.speed = float(spd)
-                            if idx + 10 < n:
-                                dist = states[idx + 10]
-                                if isinstance(dist, int) and 0 <= dist <= 9999:
-                                    self.state.total_distance = float(dist) / 10.0
-                            if idx + 12 < n:
-                                t = states[idx + 12]
-                                if isinstance(t, int) and 0 <= t <= 9999:
-                                    self.state.elapsed_time = int(t)
-                            if idx + 2 < n:
-                                program = states[idx + 2]
-                                if isinstance(program, int):
-                                    self.state.program = program
-                            self.state.connected = True
-                            self._last_data_time = time.time()
-                        except Exception as ex:
-                            log.debug("Error extracting run data: %s", ex)
-                        consumed = max(consumed, i + 20)
-                        i += 1
-                        continue
-                except Exception:
-                    pass
+            # Address discovery - old style A1 + addr or new style 0x11 + addr
+            if not self._address_found and i + 1 < n:
+                if b == 0xA1:
+                    addr = states[i + 1]
+                    self._address = addr
+                    self._address_found = True
+                    self.state.cockpit_address = addr
+                    self.state.connected = True
+                    log.info("Found Daum cockpit address: 0x%02X", addr)
+                    consumed = max(consumed, i + 2)
+                    i += 2
+                    continue
+                if b == 0x11:
+                    addr = states[i + 1]
+                    self._address = addr
+                    self._address_found = True
+                    self.state.cockpit_address = addr
+                    self.state.connected = True
+                    log.info("Found Daum cockpit address: 0x%02X", addr)
+                    consumed = max(consumed, i + 2)
+                    i += 2
+                    continue
+            # Person data (A2 old or 0x74 new)
+            if self._address_found and self._address is not None and i + 2 < n:
+                if b == 0xA2 and states[i + 1] == self._address:
+                    idx = i
+                    for off in [5, 6, 7, 8, 9, 4, 10]:
+                        if idx + off < n:
+                            hr = states[idx + off]
+                            if isinstance(hr, int) and 40 <= hr <= 220:
+                                self.state.heart_rate = int(hr)
+                                break
+                    consumed = max(consumed, i + 12)
+                    i += 1
+                    continue
+                if b == 0x74 and states[i + 1] == self._address:
+                    idx = i
+                    for off in [5, 6, 7, 8, 9, 4, 10, 3]:
+                        if idx + off < n:
+                            hr = states[idx + off]
+                            if isinstance(hr, int) and 40 <= hr <= 220:
+                                self.state.heart_rate = int(hr)
+                                break
+                    consumed = max(consumed, i + 12)
+                    i += 1
+                    continue
+            # run_data (A4 old or 0x40 new)
+            if self._address_found and self._address is not None and i + 2 < n:
+                if b == 0xA4 and states[i + 1] == self._address and states[i + 2] == 0:
+                    idx = i
+                    try:
+                        if idx + 6 < n:
+                            rpm = states[idx + 6]
+                            if isinstance(rpm, int) and 0 <= rpm <= 200:
+                                self.state.cadence = float(rpm)
+                        if idx + 5 < n:
+                            power_raw = states[idx + 5]
+                            if isinstance(power_raw, int):
+                                if self.state.cadence == 0 or power_raw == 0:
+                                    self.state.power = 0.0
+                                else:
+                                    self.state.power = float(power_raw) * 5.0
+                        if idx + 16 < n:
+                            gear = states[idx + 16]
+                            if isinstance(gear, int) and 1 <= gear <= 28:
+                                self.state.gear = gear
+                        if idx + 7 < n:
+                            spd = states[idx + 7]
+                            if isinstance(spd, int) and 0 <= spd <= 150:
+                                self.state.speed = float(spd)
+                        if idx + 10 < n:
+                            dist = states[idx + 10]
+                            if isinstance(dist, int) and 0 <= dist <= 9999:
+                                self.state.total_distance = float(dist) / 10.0
+                        if idx + 12 < n:
+                            t = states[idx + 12]
+                            if isinstance(t, int) and 0 <= t <= 9999:
+                                self.state.elapsed_time = int(t)
+                        if idx + 2 < n:
+                            program = states[idx + 2]
+                            if isinstance(program, int):
+                                self.state.program = program
+                        self.state.connected = True
+                        self._last_data_time = time.time()
+                    except Exception as ex:
+                        log.debug("Error extracting run data: %s", ex)
+                    consumed = max(consumed, i + 20)
+                    i += 1
+                    continue
+                if b == 0x40 and states[i + 1] == self._address and states[i + 2] == 0:
+                    idx = i
+                    try:
+                        if idx + 6 < n:
+                            rpm = states[idx + 6]
+                            if isinstance(rpm, int) and 0 <= rpm <= 200:
+                                self.state.cadence = float(rpm)
+                        if idx + 5 < n:
+                            power_raw = states[idx + 5]
+                            if isinstance(power_raw, int):
+                                if self.state.cadence == 0 or power_raw == 0:
+                                    self.state.power = 0.0
+                                else:
+                                    self.state.power = float(power_raw) * 5.0
+                        if idx + 16 < n:
+                            gear = states[idx + 16]
+                            if isinstance(gear, int) and 1 <= gear <= 28:
+                                self.state.gear = gear
+                        if idx + 7 < n:
+                            spd = states[idx + 7]
+                            if isinstance(spd, int) and 0 <= spd <= 150:
+                                self.state.speed = float(spd)
+                        if idx + 10 < n:
+                            dist = states[idx + 10]
+                            if isinstance(dist, int) and 0 <= dist <= 9999:
+                                self.state.total_distance = float(dist) / 10.0
+                        if idx + 12 < n:
+                            t = states[idx + 12]
+                            if isinstance(t, int) and 0 <= t <= 9999:
+                                self.state.elapsed_time = int(t)
+                        if idx + 2 < n:
+                            program = states[idx + 2]
+                            if isinstance(program, int):
+                                self.state.program = program
+                        self.state.connected = True
+                        self._last_data_time = time.time()
+                    except Exception as ex:
+                        log.debug("Error extracting run data: %s", ex)
+                    consumed = max(consumed, i + 25)
+                    i += 1
+                    continue
             i += 1
         if consumed > 0 and consumed <= len(self._buffer):
             del self._buffer[:consumed]

@@ -11,26 +11,34 @@ Based on analysis of [weinzmi/daumUSB2BLE/daumUSB.js](https://github.com/weinzmi
 ## Commands (from daumUSB.js)
 | Command | Hex | Purpose |
 |---------|-----|---------|
-| get_Adress | 0xA1 | Discover cockpit address |
-| get_PersonData | 0xA2 | Get user data |
-| run_Data | 0xA4 | Request live data |
-| set_Watt | 0xA6 | Set target power (ERG) |
-| set_Gear | 0xA7 | Set gear |
-| set_Prog | 0xA9 | Set program |
-| set_WattProfile | 0xAA | Set watt profile |
+| get_Adress | 0x11 | Discover cockpit address |
+| get_PersonData | 0x74 | Get user data |
+| run_Data | 0x40 | Request live data |
+| set_Watt | 0x51 | Set target power (ERG) |
+| set_Gear | 0x53 | Set gear |
+| set_Prog | 0x23 | Set program |
+| set_WattProfile | 0x68 | Set watt profile |
+
+The values above are the `daumCommands` table from the reference
+`config.yml`. An earlier revision of this document listed unrelated `0xA1`…
+values, which never matched the reference implementation.
 
 ## Discovery
-1. Send `get_Adress` (0xA1)
+1. Send `get_Adress` (0x11)
 2. Parse response to extract cockpit address
 3. Use address in subsequent commands: `[cmd][addr][data]`
 
 ## Polling
-- Request `run_Data` every ~500ms
+- Request `run_Data` (0x40) every ~500ms
 - Parse power, cadence/rpm, speed, etc from response
+- Only frames whose second byte equals the discovered cockpit address are used
 
 ## Bidirectional Control
 - **Read**: Poll `run_Data` for current values
 - **Write**: `set_Watt` for ERG target power, `set_Gear` for shifting, `set_Prog` for programs
+- `set_Watt` takes the ergopower value, i.e. `round(watts / 5)`, not raw watts
+- The parser still accepts the legacy `0xA1`/`0xA2`/`0xA4` response prefixes,
+  but requests and writes always use the table above
 
 ## Notes
 - Frame format details vary; our implementation is simplified but follows the pattern
