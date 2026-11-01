@@ -15,7 +15,8 @@ This guide covers installing the Daum Bridge from GitHub and its prerequisites.
 - Bluetooth range between Linux bridge and Windows/MyWhoosh
 
 ### Software Requirements
-- Python >= 3.10
+- Python 3.10–3.12 (Python 3.13+ breaks `dbus-next`, which the BLE FTMS
+  backend needs). The repo pins `.python-version` to 3.12 for `uv`.
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - Git
 - `pyserial`, `dbus-next` (installed via dependencies)
