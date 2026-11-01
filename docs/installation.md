@@ -215,6 +215,15 @@ The user running the bridge must be in `bluetooth` group (done by setup script).
 sudo hciconfig hci0 down
 sudo hciconfig hci0 up
 ```
+- If MyWhoosh is connected but stays at zero, check `http://<bridge>:8080/api/diagnostics`
+  → `ble.characteristics`: `notifying` shows whether the app enabled notifications and
+  `notifications_sent` whether the bridge is sending them.
+- After restarting the bridge while a client is connected, the BLE link may stay up
+  without the app re-subscribing. Disconnect it so it reconnects and rediscovers the
+  GATT tree (MyWhoosh usually reconnects on its own):
+```bash
+bluetoothctl disconnect <client-mac>
+```
 
 ## ANT+ FE-C (optional)
 

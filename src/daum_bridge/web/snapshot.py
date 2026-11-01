@@ -76,6 +76,13 @@ def diagnostics_snapshot(bridge) -> dict:
     app_since = getattr(bridge, "_app_connected_time")
     state = state_snapshot(bridge)
     ant_backend = getattr(bridge, "_ant_backend", None)
+    ble_backend = getattr(bridge, "_ble_backend", None)
+    ble_diagnostics = None
+    if ble_backend is not None and hasattr(ble_backend, "diagnostics"):
+        try:
+            ble_diagnostics = ble_backend.diagnostics()
+        except Exception:
+            ble_diagnostics = None
     return {
         "serial_connected": (
             getattr(bridge.protocol, "_address_found", False) if bridge.protocol else False
@@ -87,6 +94,7 @@ def diagnostics_snapshot(bridge) -> dict:
             ant_backend is not None and getattr(ant_backend, "running", False)
         ),
         "ant_last_error": getattr(ant_backend, "last_error", None),
+        "ble": ble_diagnostics,
         "target_watt": getattr(bridge, "_target_watt", 0),
         "target_resistance_percent": getattr(bridge, "_target_resistance_pct", 0.0),
         "target_grade_percent": getattr(bridge, "_target_grade_pct", None),

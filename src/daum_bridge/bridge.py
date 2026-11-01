@@ -418,12 +418,16 @@ class DaumBridge:
                 pass
         try:
             if self._ble_backend:
+                stop_coro = self._ble_backend.stop()
                 if self._ble_loop and self._ble_loop.is_running():
                     try:
-                        fut = asyncio.run_coroutine_threadsafe(self._ble_backend.stop(), self._ble_loop)
-                        fut.result(timeout=2)
+                        fut = asyncio.run_coroutine_threadsafe(stop_coro, self._ble_loop)
+                        fut.result(timeout=5)
                     except Exception as e:
                         log.debug("BLE stop error: %s", e)
+                else:
+                    # The BLE thread is already gone; avoid an un-awaited coroutine.
+                    stop_coro.close()
         except Exception as e:
             log.debug("BLE stop error: %s", e)
         try:
