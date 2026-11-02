@@ -97,8 +97,8 @@ TARGET_FEATURE_FLAGS = (1 << 2) | (1 << 3) | (1 << 13)
 
 # Indoor Bike Data flags. The order of the fields below follows the bit order,
 # as required by the FTMS specification: instantaneous speed, instantaneous
-# cadence, instantaneous power, total distance, elapsed time.
-INDOOR_BIKE_DATA_FLAGS = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 9) | (1 << 12)
+# cadence, total distance, instantaneous power, elapsed time.
+INDOOR_BIKE_DATA_FLAGS = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 11)
 
 #: Cycling Power Measurement flag: crank revolution data present.
 CYCLING_POWER_CRANK_FLAG = 0x0020
@@ -133,7 +133,11 @@ def build_indoor_bike_data(state) -> bytes:
 
     Fields (in this order, matching :data:`INDOOR_BIKE_DATA_FLAGS`):
     instantaneous speed (0.01 km/h), instantaneous cadence (0.5 rpm),
-    instantaneous power (W), total distance (m), elapsed time (s).
+    total distance (m), instantaneous power (W), elapsed time (s).
+
+    The FTMS field order is dictated by the flag bits, not by what is
+    convenient: distance (bit 4) comes *before* power (bit 6). Swapping them
+    makes clients read power out of the distance bytes.
     """
     speed = int(clamp(as_float(getattr(state, "speed", 0)) * 100.0, 0, 0xFFFF))
     cadence = int(clamp(as_float(getattr(state, "cadence", 0)) * 2.0, 0, 0xFFFF))
@@ -143,9 +147,9 @@ def build_indoor_bike_data(state) -> bytes:
     )
     elapsed = int(clamp(as_float(getattr(state, "elapsed_time", 0)), 0, 0xFFFF))
     return (
-        struct.pack("<HHHh", INDOOR_BIKE_DATA_FLAGS, speed, cadence, power)
+        struct.pack("<HHH", INDOOR_BIKE_DATA_FLAGS, speed, cadence)
         + distance.to_bytes(3, "little")
-        + struct.pack("<H", elapsed)
+        + struct.pack("<hH", power, elapsed)
     )
 
 

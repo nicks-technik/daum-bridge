@@ -27,15 +27,15 @@ def test_indoor_bike_data_layout_matches_flags():
 
     packet = ble_ftms.build_indoor_bike_data(state)
 
-    assert ble_ftms.INDOOR_BIKE_DATA_FLAGS == 0x1254
-    flags, speed, cadence, power = struct.unpack_from("<HHHh", packet, 0)
-    distance = int.from_bytes(packet[8:11], "little")
-    (elapsed,) = struct.unpack_from("<H", packet, 11)
+    assert ble_ftms.INDOOR_BIKE_DATA_FLAGS == 0x0854
+    flags, speed, cadence = struct.unpack_from("<HHH", packet, 0)
+    distance = int.from_bytes(packet[6:9], "little")
+    power, elapsed = struct.unpack_from("<hH", packet, 9)
 
     assert len(packet) == 13
-    # Fields are ordered by flag bit: speed (2), cadence (4), power (6),
-    # distance (9), elapsed time (12).
-    assert flags == 0x1254
+    # Fields are ordered by flag bit: speed (0), cadence (2), distance (4),
+    # power (6), elapsed time (11).
+    assert flags == 0x0854
     assert speed == 3240            # 0.01 km/h
     assert cadence == 180           # 0.5 rpm
     assert power == 210             # W
@@ -45,7 +45,8 @@ def test_indoor_bike_data_layout_matches_flags():
 
 def test_indoor_bike_data_handles_missing_values():
     packet = ble_ftms.build_indoor_bike_data(DaumState())
-    flags, speed, cadence, power = struct.unpack_from("<HHHh", packet, 0)
+    flags, speed, cadence = struct.unpack_from("<HHH", packet, 0)
+    (power,) = struct.unpack_from("<h", packet, 9)
     assert flags == ble_ftms.INDOOR_BIKE_DATA_FLAGS
     assert (speed, cadence, power) == (0, 0, 0)
 
