@@ -50,6 +50,10 @@ class DaumProtocol:
         self._buffer = bytearray()
         self._frames_seen = []
         self._raw_log = []
+        #: The Daum frame has no documented heart-rate offset; the byte guesses
+        #: below produce noise. When a BLE belt is handled by the bridge, the
+        #: serial value must not overwrite it.
+        self.ignore_heart_rate = False
 
     def _write(self, data: bytes):
         if self.log_raw:
@@ -177,23 +181,25 @@ class DaumProtocol:
             if self._address_found and self._address is not None and i + 2 < n:
                 if b == 0xA2 and states[i + 1] == self._address:
                     idx = i
-                    for off in [5, 6, 7, 8, 9, 4, 10]:
-                        if idx + off < n:
-                            hr = states[idx + off]
-                            if isinstance(hr, int) and 40 <= hr <= 220:
-                                self.state.heart_rate = int(hr)
-                                break
+                    if not self.ignore_heart_rate:
+                        for off in [5, 6, 7, 8, 9, 4, 10]:
+                            if idx + off < n:
+                                hr = states[idx + off]
+                                if isinstance(hr, int) and 40 <= hr <= 220:
+                                    self.state.heart_rate = int(hr)
+                                    break
                     consumed = max(consumed, i + 12)
                     i += 1
                     continue
                 if b == 0x74 and states[i + 1] == self._address:
                     idx = i
-                    for off in [5, 6, 7, 8, 9, 4, 10, 3]:
-                        if idx + off < n:
-                            hr = states[idx + off]
-                            if isinstance(hr, int) and 40 <= hr <= 220:
-                                self.state.heart_rate = int(hr)
-                                break
+                    if not self.ignore_heart_rate:
+                        for off in [5, 6, 7, 8, 9, 4, 10, 3]:
+                            if idx + off < n:
+                                hr = states[idx + off]
+                                if isinstance(hr, int) and 40 <= hr <= 220:
+                                    self.state.heart_rate = int(hr)
+                                    break
                     consumed = max(consumed, i + 12)
                     i += 1
                     continue

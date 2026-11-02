@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import gears, sim
-from .numbers import maybe_float, maybe_int
+from .numbers import as_float, maybe_float, maybe_int
 from .ride_recorder import RideRecorder
 from .serial.daum import DaumProtocol, DaumState
 from .serial.port import auto_detect_daum_port, open_serial
@@ -61,6 +61,10 @@ class DaumBridge:
         self._ble_loop = None
         self._ble_thread = None
         self._ant_backend = None
+        #: BLE heart-rate belt read by the bridge (central role), so the value
+        #: reaches the ride file even when the app uses the belt itself.
+        self._hr_backend = None
+        self._heart_rate_source = "serial"
         #: True while a training app (MyWhoosh/Zwift, i.e. an FTMS client) is
         #: attached. Written by the BLE backend when notifications start and
         #: cleared when the client disconnects. The private attribute is exposed
@@ -312,6 +316,12 @@ class DaumBridge:
         try:
             self.serial_port = open_serial(port, cfg.baudrate, cfg.timeout, cfg.bytesize, cfg.parity, cfg.stopbits)
             self.protocol = DaumProtocol(self.serial_port, log_raw=getattr(self.config.logging, 'log_raw_frames', False))
+            hr_cfg = getattr(self.config, "heart_rate", None)
+            if hr_cfg is not None and getattr(hr_cfg, "enabled", False):
+                # The frame has no documented HR offset; the parser's byte
+                # guesses are noise and must not overwrite the BLE belt.
+                self.protocol.ignore_heart_rate = True
+                self._heart_rate_source = "ble"
         except Exception as e:
             log.error(f"Failed to open serial port {port}: {e}")
             raise
@@ -346,6 +356,19 @@ class DaumBridge:
                 self._ble_thread.start()
         except Exception as e:
             log.warning("Failed to start BLE backend: %s", e)
+        # Start the BLE heart-rate central (belt) if enabled
+        try:
+            hr_cfg = getattr(self.config, "heart_rate", None)
+            if hr_cfg is not None and getattr(hr_cfg, "enabled", False):
+                from .backends.hr_ble import HeartRateBackend
+                self._hr_backend = HeartRateBackend(self, self.config)
+                if not self._hr_backend.start():
+                    log.warning(
+                        "BLE heart rate requested but unavailable: %s",
+                        self._hr_backend.last_error,
+                    )
+        except Exception as e:
+            log.warning("Failed to start BLE heart rate: %s", e)
         # Start ANT+ backend if enabled
         try:
             if getattr(self.config, "ant", None) and getattr(self.config.ant, "enabled", False):
@@ -421,6 +444,11 @@ class DaumBridge:
                 self._thread.join(timeout=2)
             except Exception:
                 pass
+        try:
+            if self._hr_backend:
+                self._hr_backend.stop()
+        except Exception as e:
+            log.debug("Heart-rate stop error: %s", e)
         try:
             if self._ble_backend:
                 stop_coro = self._ble_backend.stop()
@@ -692,6 +720,7 @@ class DaumBridge:
             cw=getattr(sim_cfg, "cw", 0.51),
             max_grade_percent=getattr(sim_cfg, "max_grade_percent", 16.0),
         )
+        watts *= max(0.0, as_float(getattr(sim_cfg, "power_scale", 1.0), 1.0))
         target = sim.clamp_power(watts)
         if abs(target - self._sim_watt) < 5 and time.time() - self._last_sim_apply < 2.0:
             return

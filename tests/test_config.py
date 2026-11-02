@@ -33,6 +33,29 @@ def test_ble_config_defaults():
     assert bl.enabled is True
     assert bl.adapter == "hci0"
     assert bl.device_name == "DAUM-8008-TRS"
+    assert bl.advertise_heart_rate is True
+
+
+def test_sim_config_defaults():
+    from daum_bridge.config import SimConfig
+
+    si = SimConfig()
+    assert si.enabled is True
+    assert si.rider_mass_kg == 80.0
+    assert si.bike_mass_kg == 9.0
+    assert si.power_scale == 1.0
+
+
+def test_config_from_dict_sim_and_heart_rate():
+    c = Config.from_dict(
+        {
+            "sim": {"power_scale": 0.6, "rider_mass_kg": 95},
+            "ble": {"advertise_heart_rate": False},
+        }
+    )
+    assert c.sim.power_scale == 0.6
+    assert c.sim.rider_mass_kg == 95.0
+    assert c.ble.advertise_heart_rate is False
 
 
 def test_web_config_defaults():

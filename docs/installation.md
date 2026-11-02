@@ -226,6 +226,42 @@ sudo hciconfig hci0 up
 bluetoothctl disconnect <client-mac>
 ```
 
+### Device name
+BlueZ answers the GAP Device Name characteristic (0x2A00) from the adapter
+*alias*, not from the LE advertisement's `LocalName`. Apps such as MyWhoosh read
+that characteristic after connecting, so an adapter named `DietPi` wins even
+when the advertisement carries `DAUM-8008-TRS`.
+
+At startup the bridge sets the adapter alias to `ble.device_name` (and logs
+`Adapter alias on hci0 set to DAUM-8008-TRS`). The alias is persisted by BlueZ.
+If an app still shows the old host name, remove the trainer from the app (and
+from the Windows Bluetooth device list) and scan again — Windows caches device
+names by address.
+
+### Heart-rate belt (optional)
+Pair the belt once, in the bridge rather than in the training app:
+
+```yaml
+ble:
+  advertise_heart_rate: true
+
+heart_rate:
+  enabled: true
+  device: ""        # BLE address or part of the name; empty = first strap
+  scan_timeout: 30
+  reconnect_delay: 5
+```
+
+The bridge scans with the same adapter that is advertising FTMS, subscribes to
+the standard Heart Rate Measurement characteristic (0x2A37), writes the value
+into the ride recording (so the TCX contains heart rate) and republishes it
+through the FTMS Heart Rate Service, so MyWhoosh still displays it.
+
+A strap accepts only one central at a time. Disconnect/remove the belt from
+MyWhoosh and Windows Bluetooth first; otherwise the bridge cannot see it and
+logs `no heart-rate belt found ...`. The status is visible in
+`/api/diagnostics` → `heart_rate_backend`.
+
 ## ANT+ FE-C (optional)
 
 In addition to BLE FTMS the bridge can act as an ANT+ FE-C trainer. Install

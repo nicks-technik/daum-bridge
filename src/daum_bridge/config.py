@@ -137,6 +137,30 @@ class SimConfig:
     cw: float = 0.51
     #: Grade is clamped to this value; the bridge sends nothing steeper anyway.
     max_grade_percent: float = 16.0
+    #: Multiplier on the calculated power: <1 makes free riding easier, >1
+    #: harder. The physics model is a starting point, not a calibrated brake.
+    power_scale: float = 1.0
+
+
+@dataclass
+class HeartRateConfig:
+    """BLE heart-rate belt paired directly to the bridge (central role).
+
+    Pairing the belt to the training app means the bridge never sees the heart
+    rate, so it cannot be written to the TCX file. This backend scans for the
+    belt, subscribes to the standard Heart Rate Measurement characteristic and
+    feeds the value into the bridge state, which both the ride recorder (TCX)
+    and the FTMS Heart Rate Service consume. ``device`` is an address or a
+    case-insensitive part of the advertised name; empty means "first device
+    that advertises the Heart Rate service".
+    """
+
+    enabled: bool = False
+    device: str = ""
+    #: BlueZ adapter to scan with. Empty = use ``ble.adapter``.
+    adapter: str = ""
+    scan_timeout: float = 30.0
+    reconnect_delay: float = 5.0
 
 
 @dataclass
@@ -144,6 +168,11 @@ class BLEConfig:
     enabled: bool = True
     adapter: str = "hci0"
     device_name: str = "DAUM-8008-TRS"
+    #: Publish the Heart Rate Service from the bridge. The Daum reports a heart
+    #: rate only when its own (analog) chest strap is paired; otherwise the
+    #: serial value is noise, and advertising it stops the training app from
+    #: using a real BLE belt. Turn this off when a belt is paired to the app.
+    advertise_heart_rate: bool = True
 
 
 @dataclass
@@ -286,6 +315,7 @@ def _parse_sim(section: dict) -> SimConfig:
     config.max_grade_percent = as_float(
         section.get("max_grade_percent"), config.max_grade_percent
     )
+    config.power_scale = as_float(section.get("power_scale"), config.power_scale)
     return config
 
 
@@ -295,6 +325,22 @@ def _parse_ble(section: dict) -> BLEConfig:
     config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
     config.adapter = _cfg_str(section.get("adapter"), config.adapter)
     config.device_name = _cfg_str(section.get("device_name"), config.device_name)
+    config.advertise_heart_rate = _cfg_bool(
+        section.get("advertise_heart_rate"), config.advertise_heart_rate
+    )
+    return config
+
+
+def _parse_heart_rate(section: dict) -> HeartRateConfig:
+    """Build :class:`HeartRateConfig` from the ``heart_rate`` section."""
+    config = HeartRateConfig()
+    config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
+    config.device = _cfg_str(section.get("device"), config.device)
+    config.adapter = _cfg_str(section.get("adapter"), config.adapter)
+    config.scan_timeout = as_float(section.get("scan_timeout"), config.scan_timeout)
+    config.reconnect_delay = as_float(
+        section.get("reconnect_delay"), config.reconnect_delay
+    )
     return config
 
 
@@ -398,6 +444,7 @@ class Config:
     serial: SerialConfig = field(default_factory=SerialConfig)
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
     sim: SimConfig = field(default_factory=SimConfig)
+    heart_rate: HeartRateConfig = field(default_factory=HeartRateConfig)
     ble: BLEConfig = field(default_factory=BLEConfig)
     ant: ANTConfig = field(default_factory=ANTConfig)
     strava: StravaConfig = field(default_factory=StravaConfig)
@@ -428,6 +475,9 @@ class Config:
         sim = _section(data, "sim")
         if sim:
             cfg.sim = _parse_sim(sim)
+        heart_rate = _section(data, "heart_rate")
+        if heart_rate:
+            cfg.heart_rate = _parse_heart_rate(heart_rate)
         ble = _section(data, "ble")
         if ble:
             cfg.ble = _parse_ble(ble)

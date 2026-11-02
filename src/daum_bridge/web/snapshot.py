@@ -27,6 +27,7 @@ def state_snapshot(bridge) -> dict:
         "speed": state.speed,
         "gear": state.gear,
         "heart_rate": state.heart_rate,
+        "heart_rate_source": getattr(bridge, "_heart_rate_source", "serial"),
         "program": state.program,
         "cockpit_address": state.cockpit_address,
         "distance": total_distance,
@@ -79,6 +80,7 @@ def diagnostics_snapshot(bridge) -> dict:
     state = state_snapshot(bridge)
     ant_backend = getattr(bridge, "_ant_backend", None)
     ble_backend = getattr(bridge, "_ble_backend", None)
+    hr_backend = getattr(bridge, "_hr_backend", None)
     ble_diagnostics = None
     if ble_backend is not None and hasattr(ble_backend, "diagnostics"):
         try:
@@ -97,6 +99,11 @@ def diagnostics_snapshot(bridge) -> dict:
         ),
         "ant_last_error": getattr(ant_backend, "last_error", None),
         "ble": ble_diagnostics,
+        "heart_rate_backend": (
+            hr_backend.status()
+            if hr_backend is not None and hasattr(hr_backend, "status")
+            else None
+        ),
         "target_watt": getattr(bridge, "_target_watt", 0),
         "target_resistance_percent": getattr(bridge, "_target_resistance_pct", 0.0),
         "target_grade_percent": getattr(bridge, "_target_grade_pct", None),
