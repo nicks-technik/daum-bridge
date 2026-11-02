@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-02
+
+### Added
+- BLE heart-rate belt support (``heart_rate`` config section): the bridge scans
+  for the strap on the same adapter that advertises FTMS, subscribes to the
+  standard Heart Rate Measurement characteristic (0x2A37) and feeds the value
+  into the ride recording, so the TCX file contains heart rate even though the
+  belt is paired with the bridge instead of the training app. The value is
+  republished through the FTMS Heart Rate Service, so MyWhoosh still displays
+  it. A strap accepts one central at a time: remove it from the app first.
+- ``/api/state`` exposes ``heart_rate_source`` (``ble`` or ``serial``) and
+  ``/api/diagnostics`` exposes a ``heart_rate_backend`` status block.
+
+### Fixed
+- Training apps showed the host name (``DietPi``) instead of the configured
+  ``ble.device_name``: BlueZ serves the GAP Device Name characteristic (0x2A00)
+  from the adapter *alias*, not from the advertisement's ``LocalName``. The
+  bridge now sets the adapter alias to ``ble.device_name`` at startup; the
+  alias is persisted by BlueZ.
+- The FTMS advertisement no longer lists the Heart Rate Service when
+  ``ble.advertise_heart_rate`` is false, so clients cannot connect to a service
+  that is not exported.
+- While the BLE heart-rate backend is enabled, the Daum serial frame's guessed
+  heart-rate byte is ignored; the parser's byte guesses are noise (0/81/116 at
+  rest) and must not overwrite the belt reading.
+
 ## [0.4.3] - 2026-11-02
 
 ### Added
@@ -13,7 +39,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   sent as an ERG target so the Daum brake actually changes load on climbs and
   descents. Gear changes remain in the rider's control and change the
   calculated load by altering the reported speed. Tunable rider/bike constants
-  live under the new ``sim`` config section.
+  live under the new ``sim`` config section; ``sim.power_scale`` makes the
+  whole free ride easier (<1) or harder (>1) without touching the physics.
+- ``ble.advertise_heart_rate`` (default ``true``): turn it off when a BLE belt
+  is paired directly in the training app. The Daum only reports a heart rate
+  when its own chest strap is paired; otherwise the serial value is noise and
+  advertising it stops the app from using the real belt.
 
 ### Fixed
 - FTMS Indoor Bike Data field order was wrong: distance (0x04) and power
