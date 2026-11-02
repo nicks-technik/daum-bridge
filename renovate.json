@@ -2,5 +2,14 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "dbus-next does not import on Python 3.13+, so the BLE FTMS backend needs 3.10-3.12 (see docs/installation.md)",
+      "matchPackageNames": [
+        "python"
+      ],
+      "allowedVersions": ">=3.10 <3.13"
+    }
   ]
 }
