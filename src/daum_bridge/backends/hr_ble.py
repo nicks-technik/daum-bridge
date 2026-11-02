@@ -139,6 +139,21 @@ def find_device(objects: dict, wanted: str = "") -> Optional[tuple[str, dict]]:
     return candidates[0]
 
 
+def properties_match_rule(char_path: str) -> str:
+    """Return the D-Bus match rule for a characteristic's Value signals.
+
+    dbus-next only delivers broadcast signals to a connection that added a
+    matching rule. ``add_message_handler`` alone is not enough, so the HR
+    backend must subscribe explicitly before ``StartNotify``.
+    """
+    return (
+        "type='signal',sender='org.bluez',"
+        "interface='org.freedesktop.DBus.Properties',"
+        "member='PropertiesChanged',"
+        f"path='{char_path}'"
+    )
+
+
 def find_heart_rate_characteristic(objects: dict) -> Optional[str]:
     """Return the ``0x2A37`` characteristic that belongs to the HR service."""
     services = {}
@@ -188,6 +203,7 @@ class HeartRateBackend:
         self._info: dict = {}
         self._last_seen = 0.0
         self._last_hr = 0
+        self._match_rule: Optional[str] = None
 
     # -- public API -------------------------------------------------------
     def start(self) -> bool:
@@ -289,6 +305,7 @@ class HeartRateBackend:
                 await self._call(path, iface, member)
             except Exception:
                 pass
+        await self._remove_match()
         self._char_path = None
         self._device_path = None
         if self._bus is not None:
@@ -317,6 +334,7 @@ class HeartRateBackend:
             if not char_path:
                 raise RuntimeError("belt has no Heart Rate Measurement characteristic")
             self._char_path = char_path
+            await self._add_match(char_path)
             await self._call(char_path, GATT_CHAR_IFACE, "StartNotify")
         except Exception:
             self._char_path = None
@@ -348,6 +366,7 @@ class HeartRateBackend:
             await self._call(path, DEVICE_IFACE, "Disconnect")
         except Exception:
             pass
+        await self._remove_match()
         self._char_path = None
         self._device_path = None
         self._last_hr = 0
@@ -431,6 +450,46 @@ class HeartRateBackend:
         while self._running and time.monotonic() < deadline:
             await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
+    async def _add_match(self, char_path: str):
+        """Ask D-Bus to deliver the characteristic's ``PropertiesChanged``."""
+        rule = properties_match_rule(char_path)
+        if rule == self._match_rule:
+            return
+        await self._remove_match()
+        reply = await self._bus.call(
+            Message(
+                destination="org.freedesktop.DBus",
+                path="/org/freedesktop/DBus",
+                interface="org.freedesktop.DBus",
+                member="AddMatch",
+                signature="s",
+                body=[rule],
+            )
+        )
+        if reply.message_type == MessageType.ERROR:
+            raise RuntimeError(
+                f"AddMatch failed: {reply.error_name}: {reply.body}"
+            )
+        self._match_rule = rule
+
+    async def _remove_match(self):
+        rule, self._match_rule = self._match_rule, None
+        if not rule or self._bus is None:
+            return
+        try:
+            await self._bus.call(
+                Message(
+                    destination="org.freedesktop.DBus",
+                    path="/org/freedesktop/DBus",
+                    interface="org.freedesktop.DBus",
+                    member="RemoveMatch",
+                    signature="s",
+                    body=[rule],
+                )
+            )
+        except Exception:
+            pass
+
     def _set_heart_rate(self, value: int):
         try:
             self.bridge.state.heart_rate = int(value)
@@ -455,7 +514,14 @@ class HeartRateBackend:
         hr = decode_heart_rate(raw.value if isinstance(raw, Variant) else raw)
         if hr is None:
             return False
+        first = self._last_hr == 0
         self._last_hr = hr
         self._last_seen = time.monotonic()
+        if first:
+            log.info(
+                "Heart rate from %s: %d bpm",
+                self._info.get("name") or self._info.get("address"),
+                hr,
+            )
         self._set_heart_rate(hr)
         return False

@@ -17,6 +17,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   ``/api/diagnostics`` exposes a ``heart_rate_backend`` status block.
 
 ### Fixed
+- The heart-rate backend received no notifications even though the strap was
+  connected and notifying: dbus-next only delivers broadcast D-Bus signals to a
+  connection that registered a matching rule, so the bridge now adds a
+  ``PropertiesChanged`` match rule for the Heart Rate Measurement
+  characteristic before ``StartNotify``. Heart rate therefore reaches both the
+  ride recording and the FTMS Heart Rate Service.
 - Training apps showed the host name (``DietPi``) instead of the configured
   ``ble.device_name``: BlueZ serves the GAP Device Name characteristic (0x2A00)
   from the adapter *alias*, not from the advertisement's ``LocalName``. The

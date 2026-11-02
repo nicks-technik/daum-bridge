@@ -148,3 +148,12 @@ def test_config_from_dict_parses_heart_rate_section():
     assert cfg.heart_rate.adapter == "hci1"
     assert cfg.heart_rate.scan_timeout == 10.0
     assert cfg.heart_rate.reconnect_delay == 2.0
+
+
+def test_properties_match_rule_targets_the_characteristic():
+    path = "/org/bluez/hci0/dev_FE_58_D3_3D_4E_EA/service000a/char000b"
+    rule = hr_ble.properties_match_rule(path)
+    assert "type='signal'" in rule
+    assert "interface='org.freedesktop.DBus.Properties'" in rule
+    assert "member='PropertiesChanged'" in rule
+    assert f"path='{path}'" in rule
