@@ -1,6 +1,6 @@
 [project]
 name = "daum-bridge"
-version = "0.4.2"
+version = "0.4.3"
 description = "Bridge Daum 8008 TRS RS232 ergometer to MyWhoosh via BLE FTMS (Linux focused)"
 readme = "README.md"
 # dbus-next (BLE FTMS peripheral) does not import on Python 3.13+ because

@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-11-02
+
+### Added
+- Free-ride terrain simulation: when MyWhoosh/Zwift sends a road grade (FTMS
+  0x11 / FE-C track simulation), the bridge converts the cockpit's reported
+  speed and the grade into a target power using the classic cycling power
+  equation (gravity + rolling resistance + aerodynamic drag). That power is
+  sent as an ERG target so the Daum brake actually changes load on climbs and
+  descents. Gear changes remain in the rider's control and change the
+  calculated load by altering the reported speed. Tunable rider/bike constants
+  live under the new ``sim`` config section.
+
+### Fixed
+- FTMS Indoor Bike Data field order was wrong: distance (0x04) and power
+  (0x40) bits were set but the payload was packed as speed, cadence, power,
+  distance, elapsed. MyWhoosh read power out of the distance bytes and showed
+  double/incorrect wattage. Flags are now ``0x0854`` and fields are packed as
+  speed, cadence, distance, power, elapsed (matching bit order). The Cycling
+  Power characteristic remains unchanged.
+- ERG mode could not be released cleanly: setting ``target_watt`` to 0 left
+  the cockpit in watt mode, holding 25 W and ignoring the gear buttons until a
+  power cycle. Releasing ERG now also sends ``set_Prog 0``. The bridge never
+  re-applies ``set_Watt 0`` at idle (which would keep watt mode active).
+- Shifting while ERG is active now leaves ERG mode by default
+  (``input.shift_clears_erg``), so handlebar buttons and the web UI can change
+  gears/load again.
+- Bridge state snapshots now expose ``sim_active`` and ``sim_watt`` for the
+  web UI and diagnostics.
+
 ## [0.4.2] - 2026-11-01
 
 ### Changed
