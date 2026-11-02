@@ -16,7 +16,7 @@ from ..numbers import as_float, clamp
 log = logging.getLogger(__name__)
 
 try:
-    from dbus_next import BusType, Variant
+    from dbus_next import BusType, Message, MessageType, Variant
     from dbus_next.aio import MessageBus
     from dbus_next.service import (
         PropertyAccess,
@@ -170,10 +170,11 @@ def build_cycling_power(state, now: Optional[float] = None) -> bytes:
 
 
 class Advertisement(ServiceInterface):
-    def __init__(self, object_path, device_name):
+    def __init__(self, object_path, device_name, advertise_heart_rate=True):
         super().__init__('org.bluez.LEAdvertisement1')
         self.path = object_path
         self.device_name = device_name
+        self.advertise_heart_rate = advertise_heart_rate
 
     @dbus_property(access=PropertyAccess.READ)
     def Type(self) -> 's':
@@ -185,8 +186,13 @@ class Advertisement(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def ServiceUUIDs(self) -> 'as':
-        # Advertise the services clients need to discover in one go.
-        return [FTMS_UUID, HEART_RATE_SERVICE_UUID, CYCLING_POWER_SERVICE_UUID]
+        # Advertise the services clients need to discover in one go. Only
+        # announce the Heart Rate Service when the backend actually exports it,
+        # otherwise clients connect to a service that does not exist.
+        uuids = [FTMS_UUID, CYCLING_POWER_SERVICE_UUID]
+        if self.advertise_heart_rate:
+            uuids.insert(1, HEART_RATE_SERVICE_UUID)
+        return uuids
 
     @dbus_property(access=PropertyAccess.READ)
     def Includes(self) -> 'as':
@@ -433,6 +439,13 @@ class BLEFTMSBackend:
             self._running = False
             return False
 
+        # BlueZ answers the GAP Device Name characteristic (0x2A00) from the
+        # adapter alias, not from the LE advertisement's LocalName. Clients such
+        # as MyWhoosh read that characteristic after connecting, so the alias has
+        # to match the name we advertise, otherwise the host name ("DietPi")
+        # wins even though the advertisement is correct.
+        await self._set_adapter_alias(self._device_name)
+
         try:
             await self._setup_gatt()
             await self._register_advertisement()
@@ -512,6 +525,39 @@ class BLEFTMSBackend:
         adapter = proxy_obj.get_interface('org.bluez.Adapter1')
         return bool(await adapter.get_powered())
 
+    async def _set_adapter_alias(self, name: str):
+        """Set the BlueZ adapter alias to the advertised device name.
+
+        BlueZ builds the GAP Device Name characteristic (0x2A00) from the
+        adapter alias (``btd_adapter_get_name`` prefers the stored alias over
+        the system name). Training apps read that characteristic after
+        connecting, so an adapter called ``DietPi`` makes MyWhoosh show
+        ``DietPi`` even though the LE advertisement carries the right name.
+        """
+        if not self._bus:
+            return
+        path = f'/org/bluez/{self._adapter}'
+        try:
+            reply = await self._bus.call(
+                Message(
+                    destination='org.bluez',
+                    path=path,
+                    interface='org.freedesktop.DBus.Properties',
+                    member='Set',
+                    signature='ssv',
+                    body=['org.bluez.Adapter1', 'Alias', Variant('s', name)],
+                )
+            )
+            if reply.message_type == MessageType.ERROR:
+                log.warning(
+                    "Could not set adapter alias on %s to %r: %s",
+                    path, name, reply.error_name,
+                )
+            else:
+                log.info("Adapter alias on %s set to %s", self._adapter, name)
+        except Exception as e:
+            log.warning("Could not set adapter alias on %s to %r: %s", path, name, e)
+
     async def _setup_gatt(self):
         # Create application
         self._app = Application(self._app_path)
@@ -578,23 +624,25 @@ class BLEFTMSBackend:
             log.debug(f"SRL setup error: {e}")
         
         # Heart Rate Service
-        try:
-            hrs_service_path = f'{self._app_path}/service1'
-            hrs_service = Service(hrs_service_path, HEART_RATE_SERVICE_UUID, primary=True)
-            self._bus.export(hrs_service_path, hrs_service)
-            self._objects.append(hrs_service)
-            hrm_path = f'{hrs_service_path}/char0'
-            hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus, backend=self)
-            self._heart_rate_char = hrm_char
-            self._bus.export(hrm_path, hrm_char)
-            self._objects.append(hrm_char)
-            bsl_path = f'{hrs_service_path}/char1'
-            bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus, backend=self)
-            bsl_char.value = [0x01]
-            self._bus.export(bsl_path, bsl_char)
-            self._objects.append(bsl_char)
-        except Exception as e:
-            log.debug(f"HRS setup error: {e}")
+        ble_cfg = getattr(self.config, "ble", None) or self.config
+        if getattr(ble_cfg, "advertise_heart_rate", True):
+            try:
+                hrs_service_path = f'{self._app_path}/service1'
+                hrs_service = Service(hrs_service_path, HEART_RATE_SERVICE_UUID, primary=True)
+                self._bus.export(hrs_service_path, hrs_service)
+                self._objects.append(hrs_service)
+                hrm_path = f'{hrs_service_path}/char0'
+                hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus, backend=self)
+                self._heart_rate_char = hrm_char
+                self._bus.export(hrm_path, hrm_char)
+                self._objects.append(hrm_char)
+                bsl_path = f'{hrs_service_path}/char1'
+                bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus, backend=self)
+                bsl_char.value = [0x01]
+                self._bus.export(bsl_path, bsl_char)
+                self._objects.append(bsl_char)
+            except Exception as e:
+                log.debug(f"HRS setup error: {e}")
         
         # Cycling Power Service
         try:
@@ -655,7 +703,12 @@ class BLEFTMSBackend:
 
     async def _register_advertisement(self):
         if self._advertisement is None:
-            self._advertisement = Advertisement(self._adv_path, self._device_name)
+            advertise_hr = bool(
+                getattr(getattr(self.config, "ble", None), "advertise_heart_rate", True)
+            )
+            self._advertisement = Advertisement(
+                self._adv_path, self._device_name, advertise_heart_rate=advertise_hr
+            )
             self._bus.export(self._adv_path, self._advertisement)
         try:
             introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
