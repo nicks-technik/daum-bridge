@@ -120,6 +120,26 @@ class BridgeConfig:
 
 
 @dataclass
+class SimConfig:
+    """FTMS/FE-C simulation ("free ride") mode.
+
+    The Daum has no incline motor, so the bridge turns the app's road grade and
+    the cockpit's own speed into a target power and lets the brake hold it.
+    These are the rider/bike constants of that power model.
+    """
+
+    enabled: bool = True
+    rider_mass_kg: float = 80.0
+    bike_mass_kg: float = 9.0
+    #: Coefficient of rolling resistance (road tyre on tarmac).
+    crr: float = 0.004
+    #: Drag area ``Cd * A`` in m^2.
+    cw: float = 0.51
+    #: Grade is clamped to this value; the bridge sends nothing steeper anyway.
+    max_grade_percent: float = 16.0
+
+
+@dataclass
 class BLEConfig:
     enabled: bool = True
     adapter: str = "hci0"
@@ -255,6 +275,20 @@ def _parse_bridge(section: dict) -> BridgeConfig:
     return config
 
 
+def _parse_sim(section: dict) -> SimConfig:
+    """Build :class:`SimConfig` from the ``sim`` section."""
+    config = SimConfig()
+    config.enabled = _cfg_bool(section.get("enabled"), config.enabled)
+    config.rider_mass_kg = as_float(section.get("rider_mass_kg"), config.rider_mass_kg)
+    config.bike_mass_kg = as_float(section.get("bike_mass_kg"), config.bike_mass_kg)
+    config.crr = as_float(section.get("crr"), config.crr)
+    config.cw = as_float(section.get("cw"), config.cw)
+    config.max_grade_percent = as_float(
+        section.get("max_grade_percent"), config.max_grade_percent
+    )
+    return config
+
+
 def _parse_ble(section: dict) -> BLEConfig:
     """Build :class:`BLEConfig` from the ``ble`` section."""
     config = BLEConfig()
@@ -363,6 +397,7 @@ def _parse_logging(section: dict) -> LoggingConfig:
 class Config:
     serial: SerialConfig = field(default_factory=SerialConfig)
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
+    sim: SimConfig = field(default_factory=SimConfig)
     ble: BLEConfig = field(default_factory=BLEConfig)
     ant: ANTConfig = field(default_factory=ANTConfig)
     strava: StravaConfig = field(default_factory=StravaConfig)
@@ -390,6 +425,9 @@ class Config:
         bridge = _section(data, "bridge")
         if bridge:
             cfg.bridge = _parse_bridge(bridge)
+        sim = _section(data, "sim")
+        if sim:
+            cfg.sim = _parse_sim(sim)
         ble = _section(data, "ble")
         if ble:
             cfg.ble = _parse_ble(ble)

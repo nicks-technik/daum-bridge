@@ -125,21 +125,44 @@ def test_set_resistance_percent_leaves_erg_and_sets_gear():
     b.protocol.set_gear.assert_called_with(11)
 
 
-def test_set_grade_percent_maps_to_resistance():
+def test_set_grade_percent_uses_simulated_power():
     b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.speed = 30.0
+    b.state.cadence = 80.0
+
+    b.set_grade_percent(3.0)
+
+    assert b._target_grade_pct == 3.0
+    assert b._sim_active is True
+    assert b._target_resistance_pct == 0.0
+    # 30 km/h up 3 % is a real climb: well above the 25 W idle floor.
+    assert b._sim_watt > 100
+    b.protocol.set_watt.assert_called_with(b._sim_watt)
+    b.protocol.set_gear.assert_not_called()
+
+
+def test_set_grade_percent_falls_back_to_gear_when_sim_disabled():
+    cfg = Config()
+    cfg.sim.enabled = False
+    b = DaumBridge(cfg)
     b.protocol = Mock()
     b.protocol._address_found = True
 
     b.set_grade_percent(3.0)
 
     assert b._target_grade_pct == 3.0
+    assert b._sim_active is False
     assert b._target_resistance_pct == 65.0
     assert b._target_gear == 13
     b.protocol.set_gear.assert_called_with(13)
 
 
-def test_set_gear_clears_grade():
-    b = DaumBridge(Config())
+def test_set_gear_clears_grade_outside_sim():
+    cfg = Config()
+    cfg.sim.enabled = False
+    b = DaumBridge(cfg)
     b.protocol = Mock()
     b.protocol._address_found = True
     b.set_grade_percent(2.0)
@@ -149,6 +172,19 @@ def test_set_gear_clears_grade():
 
     assert b._target_grade_pct is None
     assert b._target_resistance_pct == b.gear_to_resistance_percent(5)
+
+
+def test_set_gear_keeps_grade_in_sim():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.speed = 30.0
+    b.set_grade_percent(4.0)
+
+    b.set_gear(5)
+
+    assert b._sim_active is True
+    assert b._target_grade_pct == 4.0
 
 
 def test_target_power_grants_erg_and_clears_grade():

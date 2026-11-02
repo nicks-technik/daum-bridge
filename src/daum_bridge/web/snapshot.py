@@ -43,6 +43,8 @@ def bridge_snapshot(bridge) -> dict:
         "erg_control_granted": getattr(bridge, "_erg_control_granted", False),
         "target_resistance_percent": getattr(bridge, "_target_resistance_pct", 0.0),
         "target_grade_percent": getattr(bridge, "_target_grade_pct", None),
+        "sim_active": getattr(bridge, "_sim_active", False),
+        "sim_watt": getattr(bridge, "_sim_watt", 0),
         "app_connected": getattr(bridge, "_app_connected", False),
         # Kept for API compatibility with older clients; both keys now describe
         # the single "is an FTMS client attached" flag.

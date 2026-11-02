@@ -17,6 +17,18 @@ bridge:
   # Highest gear used when FTMS/FE-C resistance is translated to Daum gears.
   max_gear: 20
 
+sim:
+  # Free-ride ("simulation") mode: apps such as MyWhoosh send a road grade
+  # instead of a target power. The Daum has no incline motor, so the bridge
+  # turns the cockpit's speed + the grade into a target power and lets the
+  # brake hold it. These are the rider/bike constants of that power model.
+  enabled: true
+  rider_mass_kg: 80
+  bike_mass_kg: 9
+  crr: 0.004              # rolling resistance coefficient (road tyre)
+  cw: 0.51                # drag area Cd * A in m^2
+  max_grade_percent: 16   # grades are clamped to this value
+
 ble:
   enabled: true
   adapter: "hci0"  # BlueZ adapter

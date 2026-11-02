@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import gears
+from . import gears, sim
 from .numbers import maybe_float, maybe_int
 from .ride_recorder import RideRecorder
 from .serial.daum import DaumProtocol, DaumState
@@ -78,6 +78,11 @@ class DaumBridge:
         self._last_target_set = 0.0
         self._erg_retry_count = 0
         self._last_erg_attempt = 0.0
+        #: Simulation ("free ride") mode: the app sends a grade, the bridge
+        #: turns it into a target power (see :mod:`daum_bridge.sim`).
+        self._sim_active = False
+        self._sim_watt = 0
+        self._last_sim_apply = 0.0
         self._virtual_shifting_enabled = True
 
         # --- ride recording ----------------------------------------------
@@ -491,8 +496,14 @@ class DaumBridge:
                         except Exception as e:
                             log.debug(f"Run data request error: {e}")
                             self._consecutive_errors += 1
-                    # Re-apply target watt aggressively for ERG with auto-engage fallback
-                    if self._target_watt >= 0:
+                    # Simulation mode: speed + grade -> target power. The brake
+                    # has no incline motor, so this is how terrain reaches it.
+                    if self._sim_active:
+                        self._apply_sim_power()
+                    # Re-apply the target watt while ERG is active. Never at
+                    # idle: sending ``set_Watt 0`` keeps the cockpit in watt
+                    # mode, where it holds 25 W and ignores the gear buttons.
+                    if self._target_watt > 0:
                         interval = 0.4 if self._erg_control_granted else 0.8
                         if time.time() - last_watt_apply > interval:
                             try:
@@ -549,12 +560,20 @@ class DaumBridge:
             # describes the load, so drop it from the reported state.
             self._target_resistance_pct = 0.0
             self._target_grade_pct = None
+            self._sim_active = False
             # Requesting a target power means the app controls load in ERG mode.
             self._erg_control_granted = True
         if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_watt(self._target_watt)
                 self._last_target_set = time.time()
+                if self._target_watt == 0:
+                    # Releasing ERG must also leave watt mode, otherwise the
+                    # cockpit keeps holding the last target power and ignores
+                    # the gear buttons (manual program 0).
+                    set_program = getattr(self.protocol, "set_program", None)
+                    if callable(set_program):
+                        set_program(0)
             except Exception as e:
                 log.debug("set_watt error: %s", e)
 
@@ -600,11 +619,12 @@ class DaumBridge:
         return gears.resistance_to_gear(percent, self.max_gear)
 
     def set_resistance_percent(self, percent: float):
-        """Apply a 0-100 % resistance level (FTMS/FE-C simulation mode).
+        """Apply a 0-100 % resistance level (FTMS/FE-C resistance mode).
 
         Resistance is emulated with the Daum gear, so ERG mode is left first:
         otherwise the cockpit keeps holding the last target power and gear
-        changes have no effect.
+        changes have no effect. This also leaves simulation mode: an explicit
+        resistance level replaces the grade-derived power.
         """
         pct = maybe_float(percent)
         if pct is None:
@@ -612,6 +632,7 @@ class DaumBridge:
         pct = max(0.0, min(100.0, pct))
         self._target_resistance_pct = round(pct, 1)
         self._target_grade_pct = None
+        self._sim_active = False
         if self._target_watt != 0 or self._erg_control_granted:
             self.set_target_watt(0)
             self._erg_control_granted = False
@@ -620,16 +641,70 @@ class DaumBridge:
     def set_grade_percent(self, grade: float):
         """Apply a road grade in percent (FTMS/FE-C simulation mode).
 
-        The Daum has no incline motor, so the grade is translated into a
-        resistance level: 0 % maps to half of the gear range and every 1 %
-        of grade adds 5 percentage points (clamped to 0-100 %).
+        The Daum has no incline motor, so the bridge simulates the load: the
+        cockpit's own speed and the requested grade are turned into the power a
+        rider would need to hold that speed on that grade, and that power is
+        sent as an ERG target. See :mod:`daum_bridge.sim`.
+
+        A grade alone never changes the gear: gearing stays with the rider
+        (handlebar buttons, web UI, app), and the load follows from speed.
         """
         value = maybe_float(grade)
         if value is None:
             return
+        sim_cfg = getattr(self.config, "sim", None)
         value = max(-25.0, min(25.0, value))
-        self.set_resistance_percent(50.0 + value * 5.0)
         self._target_grade_pct = round(value, 2)
+        if sim_cfg is not None and not getattr(sim_cfg, "enabled", True):
+            # Simulation disabled: fall back to the historical gear mapping.
+            self.set_resistance_percent(50.0 + value * 5.0)
+            self._target_grade_pct = round(value, 2)
+            return
+        # Leaving ERG for simulation: the app now owns the load, but through
+        # the grade instead of a fixed target.
+        if self._target_watt != 0 or self._erg_control_granted:
+            self.set_target_watt(0)
+            self._erg_control_granted = False
+        self._target_resistance_pct = 0.0
+        self._sim_active = True
+        self._apply_sim_power()
+
+    def _apply_sim_power(self):
+        """Recalculate and send the simulated target power.
+
+        Called on every poll while simulation mode is active. The cockpit is
+        only told about a change of at least 5 W (the protocol's resolution),
+        so a steady ride does not flood the 9600 baud link.
+        """
+        sim_cfg = getattr(self.config, "sim", None)
+        if sim_cfg is None or not getattr(sim_cfg, "enabled", True):
+            return
+        # At standstill there is nothing to simulate and sending set_Watt would
+        # leave the cockpit in watt mode while the rider is not pedalling.
+        if self.state.cadence <= 0:
+            return
+        watts = sim.simulated_power(
+            self.state.speed,
+            self._target_grade_pct or 0.0,
+            rider_mass_kg=getattr(sim_cfg, "rider_mass_kg", 80.0),
+            bike_mass_kg=getattr(sim_cfg, "bike_mass_kg", 9.0),
+            crr=getattr(sim_cfg, "crr", 0.004),
+            cw=getattr(sim_cfg, "cw", 0.51),
+            max_grade_percent=getattr(sim_cfg, "max_grade_percent", 16.0),
+        )
+        target = sim.clamp_power(watts)
+        if abs(target - self._sim_watt) < 5 and time.time() - self._last_sim_apply < 2.0:
+            return
+        if not (self.protocol and getattr(self.protocol, "_address_found", False)):
+            return
+        try:
+            self.protocol.set_watt(target)
+            self._sim_watt = target
+            self._last_sim_apply = time.time()
+            self._last_target_set = time.time()
+            log.debug("SIM power: %.0f km/h, %.1f %% -> %s W", self.state.speed, self._target_grade_pct or 0.0, target)
+        except Exception as e:
+            log.debug("SIM set_watt error: %s", e)
 
     def _apply_gear(self, gear: int):
         self._target_gear = max(1, min(self.max_gear, int(gear)))
@@ -642,5 +717,11 @@ class DaumBridge:
 
     def set_gear(self, gear: int):
         self._apply_gear(gear)
+        if self._sim_active:
+            # In simulation mode the gear is the terrain-neutral variable: it
+            # changes the speed the cockpit reports, and the load follows from
+            # the still-active grade. Keep the grade and recompute the power.
+            self._apply_sim_power()
+            return
         self._target_resistance_pct = self.gear_to_resistance_percent(self._target_gear)
         self._target_grade_pct = None

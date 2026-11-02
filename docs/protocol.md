@@ -23,6 +23,28 @@ The values above are the `daumCommands` table from the reference
 `config.yml`. An earlier revision of this document listed unrelated `0xA1`…
 values, which never matched the reference implementation.
 
+## Load control: ERG vs. simulation
+The brake only understands a target power (`set_Watt`, ergopower =
+`round(W / 5)`). Everything else is a translation:
+
+- **ERG**: the app sends FTMS `Set Target Power` (0x05) or FE-C page 49; the
+  bridge forwards that wattage and re-applies it while the target is active.
+  The cockpit holds the power and reports it back.
+- **Simulation / free ride**: apps send a road grade (FTMS 0x11, FE-C page 51),
+  not a wattage. The Daum has no incline motor, so `daum_bridge.sim` turns the
+  cockpit's own speed and the grade into the power a rider would need on that
+  slope (gravity + rolling resistance + drag), and the bridge sends *that* as
+  the target power. Because the gear changes the speed the cockpit reports,
+  gearing changes the load — the virtual-gear behaviour of a smart trainer.
+
+The run-data power byte is the power the cockpit regulates, in 5 W units. At
+zero cadence the bridge reports 0 W. The cockpit never reports below 25 W,
+which is why an unloaded bike always shows 25 W on its display.
+
+An idle `set_Watt` must not be sent: `set_Watt 0` leaves the cockpit in watt
+mode, where it holds 25 W and ignores the gear buttons. Releasing ERG therefore
+also sends `set_Prog 0`.
+
 ## Discovery
 1. Send `get_Adress` (0x11)
 2. Parse response to extract cockpit address
