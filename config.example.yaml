@@ -15,7 +15,7 @@ bridge:
   poll_interval: 0.5  # seconds for run_Data polling
   reconnect_delay: 2.0
   # Highest gear used when FTMS/FE-C resistance is translated to Daum gears.
-  max_gear: 20
+  max_gear: 30
 
 ble:
   enabled: true
