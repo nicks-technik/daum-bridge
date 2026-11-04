@@ -27,15 +27,15 @@ def test_indoor_bike_data_layout_matches_flags():
 
     packet = ble_ftms.build_indoor_bike_data(state)
 
-    assert ble_ftms.INDOOR_BIKE_DATA_FLAGS == 0x1254
-    flags, speed, cadence, power = struct.unpack_from("<HHHh", packet, 0)
-    distance = int.from_bytes(packet[8:11], "little")
-    (elapsed,) = struct.unpack_from("<H", packet, 11)
+    assert ble_ftms.INDOOR_BIKE_DATA_FLAGS == 0x0854
+    flags, speed, cadence = struct.unpack_from("<HHH", packet, 0)
+    distance = int.from_bytes(packet[6:9], "little")
+    power, elapsed = struct.unpack_from("<hH", packet, 9)
 
     assert len(packet) == 13
-    # Fields are ordered by flag bit: speed (2), cadence (4), power (6),
-    # distance (9), elapsed time (12).
-    assert flags == 0x1254
+    # Fields are ordered by flag bit: speed (0), cadence (2), distance (4),
+    # power (6), elapsed time (11).
+    assert flags == 0x0854
     assert speed == 3240            # 0.01 km/h
     assert cadence == 180           # 0.5 rpm
     assert power == 210             # W
@@ -45,7 +45,8 @@ def test_indoor_bike_data_layout_matches_flags():
 
 def test_indoor_bike_data_handles_missing_values():
     packet = ble_ftms.build_indoor_bike_data(DaumState())
-    flags, speed, cadence, power = struct.unpack_from("<HHHh", packet, 0)
+    flags, speed, cadence = struct.unpack_from("<HHH", packet, 0)
+    (power,) = struct.unpack_from("<h", packet, 9)
     assert flags == ble_ftms.INDOOR_BIKE_DATA_FLAGS
     assert (speed, cadence, power) == (0, 0, 0)
 
@@ -287,32 +288,24 @@ def test_gatt_setup_exports_ftms_service_and_characteristics():
     assert ("gatt-register", backend._app_path, {}) in backend._bus.calls
 
 
-def test_gatt_setup_exports_cccd_for_every_notify_characteristic():
+def test_gatt_setup_leaves_cccd_to_bluez():
+    """BlueZ adds the CCCD for notify/indicate characteristics itself.
+
+    Exporting our own 0x2902 descriptor made BlueZ insert a second CCCD after
+    the auto-created one; writes to that duplicate never enabled notifications.
+    """
     backend = ble_ftms.BLEFTMSBackend(FakeBridge(), Config())
     backend._bus = FakeBus()
 
     asyncio.run(backend._setup_gatt())
 
-    exported = backend._bus.exported
-    notify_paths = [
-        f"{backend._app_path}/service0/char1",  # indoor bike data
-        f"{backend._app_path}/service0/char2",  # fitness machine status
-        f"{backend._app_path}/service0/char3",  # control point (indicate)
-        f"{backend._app_path}/service1/char0",  # heart rate measurement
-        f"{backend._app_path}/service2/char1",  # cycling power measurement
+    descriptors = [
+        path
+        for path, obj in backend._bus.exported.items()
+        if getattr(obj, "name", None) == "org.bluez.GattDescriptor1"
     ]
-    for path in notify_paths:
-        descriptor = exported[f"{path}/desc0"]
-        assert descriptor.uuid == "00002902-0000-1000-8000-00805f9b34fb"
-        assert descriptor.Characteristic() == path
-        assert descriptor.ReadValue({}) == [0x00, 0x00]
-
-
-def test_characteristic_descriptor_tracks_client_subscription_value():
-    descriptor = ble_ftms.CCCD("/app0/service0/char1/desc0", "/app0/service0/char1")
-    descriptor.WriteValue([0x01, 0x00], {})
-    assert descriptor.Value() == [0x01, 0x00]
-    assert descriptor.UUID() == "00002902-0000-1000-8000-00805f9b34fb"
+    assert descriptors == []
+    assert not any(path.endswith("/desc0") for path in backend._bus.exported)
 
 
 def test_advertisement_registration_reaches_bluez_manager():
@@ -356,3 +349,82 @@ def test_start_returns_false_without_dbus(monkeypatch):
     assert asyncio.run(backend.start()) is False
     assert backend._running is False
 
+
+
+def _notify_characteristic(bus=None, notifying=True):
+    char = ble_ftms.Characteristic(
+        "/app0/service0/char1",
+        ble_ftms.INDOOR_BIKE_DATA_UUID,
+        ["notify"],
+        "/app0/service0",
+        bus=bus,
+        backend=None,
+    )
+    char.notifying = notifying
+    return char
+
+
+def test_send_notification_emits_raw_bytes_value():
+    """BlueZ wraps the Value in a Variant itself, so we must pass bytes.
+
+    Passing ``Variant("ay", ...)`` here used to raise a signature mismatch for
+    every notification, which silently stopped all data reaching clients.
+    """
+    char = _notify_characteristic(bus=object())
+    emitted = {}
+
+    def fake_emit(changed_properties, invalidated_properties=None):
+        emitted.update(changed_properties)
+
+    char.emit_properties_changed = fake_emit
+
+    assert asyncio.run(char.send_notification(b"\x01\x02")) is True
+    assert emitted["Value"] == b"\x01\x02"
+    assert isinstance(emitted["Value"], bytes)
+    assert char.notifications_sent == 1
+    assert char.last_error is None
+
+
+def test_send_notification_skips_when_client_not_subscribed():
+    char = _notify_characteristic(bus=object(), notifying=False)
+    char.indicating = False
+
+    assert asyncio.run(char.send_notification(b"\x01")) is False
+    assert char.notifications_sent == 0
+
+
+def test_send_notification_records_errors():
+    char = _notify_characteristic(bus=object())
+
+    def boom(_changed, _invalidated=None):
+        raise RuntimeError("dbus gone")
+
+    char.emit_properties_changed = boom
+
+    assert asyncio.run(char.send_notification(b"\x01")) is False
+    assert char.notifications_sent == 0
+    assert "dbus gone" in char.last_error
+
+
+def test_diagnostics_reports_subscription_state():
+    backend = ble_ftms.BLEFTMSBackend(FakeBridge(), Config())
+    fake = SimpleNamespace(
+        uuid=ble_ftms.INDOOR_BIKE_DATA_UUID,
+        notifying=True,
+        indicating=False,
+        notifications_sent=7,
+        last_error=None,
+    )
+    backend._indoor_bike_data_char = fake
+
+    info = backend.diagnostics()
+
+    assert info["control_point_enabled"] is False
+    assert info["characteristics"]["indoor_bike_data"] == {
+        "uuid": ble_ftms.INDOOR_BIKE_DATA_UUID,
+        "notifying": True,
+        "indicating": False,
+        "notifications_sent": 7,
+        "last_error": None,
+    }
+    assert info["characteristics"]["heart_rate"] is None

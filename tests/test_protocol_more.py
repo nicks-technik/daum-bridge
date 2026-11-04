@@ -6,7 +6,7 @@ def test_build_command_address():
     ser = Mock()
     proto = DaumProtocol(ser)
     cmd = proto.build_command(DaumCmd.GET_ADDRESS)
-    assert cmd[0] == 0xA1
+    assert cmd[0] == 0x11
 
 
 def test_build_command_with_address():
@@ -14,7 +14,7 @@ def test_build_command_with_address():
     proto = DaumProtocol(ser)
     proto._address = 0x01
     cmd = proto.build_command(DaumCmd.GET_PERSON_DATA, 0x01)
-    assert cmd[0] == 0xA2
+    assert cmd[0] == 0x74
     assert cmd[1] == 0x01
 
 
@@ -23,7 +23,7 @@ def test_build_command_with_data():
     proto = DaumProtocol(ser)
     proto._address = 0x01
     cmd = proto.build_command(DaumCmd.SET_WATT, 0x01, 200)
-    assert cmd[0] == 0xA6
+    assert cmd[0] == 0x51
     assert cmd[1] == 0x01
     assert cmd[2] == 200
 

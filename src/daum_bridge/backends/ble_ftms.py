@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 import struct
 import time
 from typing import Optional
@@ -15,13 +16,20 @@ from ..numbers import as_float, clamp
 log = logging.getLogger(__name__)
 
 try:
+    from dbus_next import BusType, Message, MessageType, Variant
     from dbus_next.aio import MessageBus
-    from dbus_next.service import ServiceInterface, method, dbus_property
-    from dbus_next import Variant, BusType
+    from dbus_next.service import (
+        PropertyAccess,
+        ServiceInterface,
+        dbus_property,
+        method,
+    )
     DBUS_AVAILABLE = True
+    DBUS_IMPORT_ERROR = None
 except Exception as e:
     log.debug("dbus-next not available: %s", e)
     DBUS_AVAILABLE = False
+    DBUS_IMPORT_ERROR = f"{type(e).__name__}: {e}"
 
     # Import-time fallbacks so the module (and its packet builders) can be used
     # on platforms without dbus-next. The backend refuses to start in that case.
@@ -38,6 +46,11 @@ except Exception as e:
         def decorator(func):
             return func
         return decorator
+
+    class PropertyAccess:  # type: ignore[no-redef]
+        READ = "read"
+        WRITE = "write"
+        READWRITE = "readwrite"
 
     class Variant:  # type: ignore[no-redef]
         def __init__(self, signature, value):
@@ -84,8 +97,8 @@ TARGET_FEATURE_FLAGS = (1 << 2) | (1 << 3) | (1 << 13)
 
 # Indoor Bike Data flags. The order of the fields below follows the bit order,
 # as required by the FTMS specification: instantaneous speed, instantaneous
-# cadence, instantaneous power, total distance, elapsed time.
-INDOOR_BIKE_DATA_FLAGS = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 9) | (1 << 12)
+# cadence, total distance, instantaneous power, elapsed time.
+INDOOR_BIKE_DATA_FLAGS = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 11)
 
 #: Cycling Power Measurement flag: crank revolution data present.
 CYCLING_POWER_CRANK_FLAG = 0x0020
@@ -120,7 +133,11 @@ def build_indoor_bike_data(state) -> bytes:
 
     Fields (in this order, matching :data:`INDOOR_BIKE_DATA_FLAGS`):
     instantaneous speed (0.01 km/h), instantaneous cadence (0.5 rpm),
-    instantaneous power (W), total distance (m), elapsed time (s).
+    total distance (m), instantaneous power (W), elapsed time (s).
+
+    The FTMS field order is dictated by the flag bits, not by what is
+    convenient: distance (bit 4) comes *before* power (bit 6). Swapping them
+    makes clients read power out of the distance bytes.
     """
     speed = int(clamp(as_float(getattr(state, "speed", 0)) * 100.0, 0, 0xFFFF))
     cadence = int(clamp(as_float(getattr(state, "cadence", 0)) * 2.0, 0, 0xFFFF))
@@ -130,9 +147,9 @@ def build_indoor_bike_data(state) -> bytes:
     )
     elapsed = int(clamp(as_float(getattr(state, "elapsed_time", 0)), 0, 0xFFFF))
     return (
-        struct.pack("<HHHh", INDOOR_BIKE_DATA_FLAGS, speed, cadence, power)
+        struct.pack("<HHH", INDOOR_BIKE_DATA_FLAGS, speed, cadence)
         + distance.to_bytes(3, "little")
-        + struct.pack("<H", elapsed)
+        + struct.pack("<hH", power, elapsed)
     )
 
 
@@ -153,25 +170,31 @@ def build_cycling_power(state, now: Optional[float] = None) -> bytes:
 
 
 class Advertisement(ServiceInterface):
-    def __init__(self, object_path, device_name):
+    def __init__(self, object_path, device_name, advertise_heart_rate=True):
         super().__init__('org.bluez.LEAdvertisement1')
         self.path = object_path
         self.device_name = device_name
+        self.advertise_heart_rate = advertise_heart_rate
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Type(self) -> 's':
         return 'peripheral'
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def LocalName(self) -> 's':
         return self.device_name
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def ServiceUUIDs(self) -> 'as':
-        # Advertise the services clients need to discover in one go.
-        return [FTMS_UUID, HEART_RATE_SERVICE_UUID, CYCLING_POWER_SERVICE_UUID]
+        # Advertise the services clients need to discover in one go. Only
+        # announce the Heart Rate Service when the backend actually exports it,
+        # otherwise clients connect to a service that does not exist.
+        uuids = [FTMS_UUID, CYCLING_POWER_SERVICE_UUID]
+        if self.advertise_heart_rate:
+            uuids.insert(1, HEART_RATE_SERVICE_UUID)
+        return uuids
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Includes(self) -> 'as':
         return ['tx-power']
 
@@ -186,6 +209,36 @@ class Application(ServiceInterface):
         self.path = object_path
 
 
+class ObjectManager(ServiceInterface):
+    """Minimal ``org.freedesktop.DBus.ObjectManager`` for BlueZ GATT discovery.
+
+    BlueZ learns about the GATT object tree by calling ``GetManagedObjects`` on
+    the application path. dbus-next does not implement that interface for
+    exported objects, so the backend exports this shim next to the application.
+    """
+
+    def __init__(self, object_path, objects):
+        super().__init__('org.freedesktop.DBus.ObjectManager')
+        self.path = object_path
+        self._objects = objects
+
+    @method()
+    def GetManagedObjects(self) -> 'a{oa{sa{sv}}}':
+        get_properties = getattr(ServiceInterface, '_get_properties', None)
+        managed = {}
+        for obj in self._objects:
+            properties = {}
+            if get_properties is not None:
+                for prop in get_properties(obj):
+                    if prop.disabled:
+                        continue
+                    properties[prop.name] = Variant(
+                        prop.signature, prop.prop_getter(obj)
+                    )
+            managed[obj.path] = {obj.name: properties}
+        return managed
+
+
 class Service(ServiceInterface):
     def __init__(self, object_path, uuid, primary=True):
         super().__init__('org.bluez.GattService1')
@@ -193,15 +246,15 @@ class Service(ServiceInterface):
         self.uuid = uuid
         self.primary = primary
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def UUID(self) -> 's':
         return self.uuid
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Primary(self) -> 'b':
         return self.primary
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Characteristics(self) -> 'ao':
         return []
 
@@ -219,26 +272,39 @@ class Characteristic(ServiceInterface):
         self.notifying = False
         self.indicating = False
         self._notify_callback = None
+        #: Number of ``PropertiesChanged`` signals emitted for ``Value``.
+        self.notifications_sent = 0
+        #: Last notification error (``None`` when the last send succeeded).
+        self.last_error = None
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def UUID(self) -> 's':
         return self.uuid
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Service(self) -> 'o':
         return self.service_path
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READWRITE)
     def Value(self) -> 'ay':
-        return self.value
+        # D-Bus 'ay' maps to bytes for dbus-next, so a list would be rejected.
+        return bytes(self.value)
 
-    @dbus_property()
+    @Value.setter
+    def Value(self, value):
+        self.value = bytes(value)
+
+    @dbus_property(access=PropertyAccess.READ)
     def Flags(self) -> 'as':
         return self.flags
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READWRITE)
     def Notifying(self) -> 'b':
         return self.notifying
+
+    @Notifying.setter
+    def Notifying(self, value):
+        self.notifying = bool(value)
 
     @method()
     def StartNotify(self):
@@ -269,7 +335,7 @@ class Characteristic(ServiceInterface):
     @method()
     def ReadValue(self, options: 'a{sv}') -> 'ay':
         log.debug(f"ReadValue {self.uuid}")
-        return self.value
+        return bytes(self.value)
 
     @method()
     def WriteValue(self, value: 'ay', options: 'a{sv}'):
@@ -281,52 +347,33 @@ class Characteristic(ServiceInterface):
             except Exception as e:
                 log.debug(f"Write callback error: {e}")
 
-    async def send_notification(self, data: bytes):
+    async def send_notification(self, data: bytes) -> bool:
+        """Send ``data`` to subscribed clients via a ``Value`` property change.
+
+        BlueZ only forwards notifications/indications for an external GATT
+        application when the application emits ``PropertiesChanged`` for the
+        characteristic's ``Value`` property. ``emit_properties_changed`` wraps
+        the value in a ``Variant`` using the property signature itself, so the
+        raw ``bytes`` object has to be passed here. Wrapping it again (e.g.
+        ``Variant("ay", bytes(data))``) raises ``SignatureBodyMismatchError``
+        and silently drops every notification.
+        """
+        if not (self.notifying or self.indicating) or not self.bus:
+            return False
         try:
-            if not (self.notifying or self.indicating) or not self.bus:
-                return False
-            self.value = list(data)
-            self.emit_properties_changed({'Value': Variant('ay', self.value)})
+            payload = bytes(data)
+            self.value = payload
+            self.emit_properties_changed({'Value': payload})
+            self.notifications_sent += 1
+            self.last_error = None
             return True
         except Exception as e:
-            log.debug(f"send_notification error: {e}")
+            error = f"{type(e).__name__}: {e}"
+            # Rate-limit: only log when the failure changes.
+            if error != self.last_error:
+                log.warning("send_notification failed on %s: %s", self.uuid, error)
+            self.last_error = error
             return False
-
-
-class CCCD(ServiceInterface):
-    """Client Characteristic Configuration Descriptor (0x2902).
-
-    BlueZ expects a CCCD for every notify/indicate characteristic so a client
-    can enable notifications. The value is only used for reads; the actual
-    subscription state is tracked by :class:`Characteristic`.
-    """
-
-    def __init__(self, object_path: str, characteristic_path: str):
-        super().__init__('org.bluez.GattDescriptor1')
-        self.path = object_path
-        self.uuid = '00002902-0000-1000-8000-00805f9b34fb'
-        self.characteristic_path = characteristic_path
-        self.value = [0x00, 0x00]
-
-    @dbus_property()
-    def UUID(self) -> 's':
-        return self.uuid
-
-    @dbus_property()
-    def Characteristic(self) -> 'o':
-        return self.characteristic_path
-
-    @dbus_property()
-    def Value(self) -> 'ay':
-        return self.value
-
-    @method()
-    def ReadValue(self, options: 'a{sv}') -> 'ay':
-        return self.value
-
-    @method()
-    def WriteValue(self, value: 'ay', options: 'a{sv}'):
-        self.value = value
 
 
 class BLEFTMSBackend:
@@ -337,6 +384,7 @@ class BLEFTMSBackend:
         self._bus = None
         self._advertisement = None
         self._app = None
+        self._object_manager = None
         self._notify_task = None
         self._adv_path = '/org/bluez/daum/advertisement0'
         self._app_path = '/org/bluez/daum/app0'
@@ -362,8 +410,23 @@ class BLEFTMSBackend:
                 self.bridge._app_connected = False
 
         if not DBUS_AVAILABLE:
-            log.warning("dbus-next not available; BLE FTMS peripheral cannot run on this platform")
-            log.warning("BLE FTMS requires Linux, BlueZ and Python 3.10-3.12 (dbus-next)")
+            pyver = platform.python_version()
+            log.warning(
+                "dbus-next not available (Python %s): %s",
+                pyver,
+                DBUS_IMPORT_ERROR or "import failed",
+            )
+            if tuple(int(p) for p in pyver.split(".")[:2]) >= (3, 13):
+                log.warning(
+                    "dbus-next does not work on Python 3.13+; "
+                    "run the bridge with Python 3.10-3.12 "
+                    "(e.g. `uv venv --python 3.12 && uv sync`)"
+                )
+            else:
+                log.warning(
+                    "BLE FTMS requires Linux, BlueZ and the dbus-next package "
+                    "(installed with `uv sync`)"
+                )
             self._running = False
             return False
 
@@ -375,6 +438,13 @@ class BLEFTMSBackend:
             log.warning("BLE FTMS peripheral requires BlueZ on Linux with system D-Bus access")
             self._running = False
             return False
+
+        # BlueZ answers the GAP Device Name characteristic (0x2A00) from the
+        # adapter alias, not from the LE advertisement's LocalName. Clients such
+        # as MyWhoosh read that characteristic after connecting, so the alias has
+        # to match the name we advertise, otherwise the host name ("DietPi")
+        # wins even though the advertisement is correct.
+        await self._set_adapter_alias(self._device_name)
 
         try:
             await self._setup_gatt()
@@ -455,6 +525,39 @@ class BLEFTMSBackend:
         adapter = proxy_obj.get_interface('org.bluez.Adapter1')
         return bool(await adapter.get_powered())
 
+    async def _set_adapter_alias(self, name: str):
+        """Set the BlueZ adapter alias to the advertised device name.
+
+        BlueZ builds the GAP Device Name characteristic (0x2A00) from the
+        adapter alias (``btd_adapter_get_name`` prefers the stored alias over
+        the system name). Training apps read that characteristic after
+        connecting, so an adapter called ``DietPi`` makes MyWhoosh show
+        ``DietPi`` even though the LE advertisement carries the right name.
+        """
+        if not self._bus:
+            return
+        path = f'/org/bluez/{self._adapter}'
+        try:
+            reply = await self._bus.call(
+                Message(
+                    destination='org.bluez',
+                    path=path,
+                    interface='org.freedesktop.DBus.Properties',
+                    member='Set',
+                    signature='ssv',
+                    body=['org.bluez.Adapter1', 'Alias', Variant('s', name)],
+                )
+            )
+            if reply.message_type == MessageType.ERROR:
+                log.warning(
+                    "Could not set adapter alias on %s to %r: %s",
+                    path, name, reply.error_name,
+                )
+            else:
+                log.info("Adapter alias on %s set to %s", self._adapter, name)
+        except Exception as e:
+            log.warning("Could not set adapter alias on %s to %r: %s", path, name, e)
+
     async def _setup_gatt(self):
         # Create application
         self._app = Application(self._app_path)
@@ -474,13 +577,16 @@ class BLEFTMSBackend:
         self._bus.export(feature_path, feature_char)
         self._objects.append(feature_char)
         
+        # BlueZ creates the CCCD (0x2902) itself for notify/indicate
+        # characteristics of external GATT applications (gatt-database.c:
+        # database_add_ccc). Exporting our own descriptor would add a second,
+        # spec-invalid CCCD whose writes never enable BlueZ notifications.
         # Indoor Bike Data (notify)
         ibd_path = f'{ftms_service_path}/char1'
         ibd_char = Characteristic(ibd_path, INDOOR_BIKE_DATA_UUID, ['notify'], ftms_service_path, bus=self._bus, backend=self)
         self._indoor_bike_data_char = ibd_char
         self._bus.export(ibd_path, ibd_char)
         self._objects.append(ibd_char)
-        self._export_cccd(ibd_path)
 
         # Fitness Machine Status (notify)
         status_path = f'{ftms_service_path}/char2'
@@ -488,7 +594,6 @@ class BLEFTMSBackend:
         self._fitness_machine_status_char = status_char
         self._bus.export(status_path, status_char)
         self._objects.append(status_char)
-        self._export_cccd(status_path)
 
         # Fitness Machine Control Point (write, indicate)
         cp_path = f'{ftms_service_path}/char3'
@@ -497,7 +602,6 @@ class BLEFTMSBackend:
         self._control_point_char = cp_char
         self._bus.export(cp_path, cp_char)
         self._objects.append(cp_char)
-        self._export_cccd(cp_path)
         
         # Supported Power Range (0x2AD6)
         try:
@@ -520,24 +624,25 @@ class BLEFTMSBackend:
             log.debug(f"SRL setup error: {e}")
         
         # Heart Rate Service
-        try:
-            hrs_service_path = f'{self._app_path}/service1'
-            hrs_service = Service(hrs_service_path, HEART_RATE_SERVICE_UUID, primary=True)
-            self._bus.export(hrs_service_path, hrs_service)
-            self._objects.append(hrs_service)
-            hrm_path = f'{hrs_service_path}/char0'
-            hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus, backend=self)
-            self._heart_rate_char = hrm_char
-            self._bus.export(hrm_path, hrm_char)
-            self._objects.append(hrm_char)
-            self._export_cccd(hrm_path)
-            bsl_path = f'{hrs_service_path}/char1'
-            bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus, backend=self)
-            bsl_char.value = [0x01]
-            self._bus.export(bsl_path, bsl_char)
-            self._objects.append(bsl_char)
-        except Exception as e:
-            log.debug(f"HRS setup error: {e}")
+        ble_cfg = getattr(self.config, "ble", None) or self.config
+        if getattr(ble_cfg, "advertise_heart_rate", True):
+            try:
+                hrs_service_path = f'{self._app_path}/service1'
+                hrs_service = Service(hrs_service_path, HEART_RATE_SERVICE_UUID, primary=True)
+                self._bus.export(hrs_service_path, hrs_service)
+                self._objects.append(hrs_service)
+                hrm_path = f'{hrs_service_path}/char0'
+                hrm_char = Characteristic(hrm_path, HEART_RATE_MEASUREMENT_UUID, ['notify'], hrs_service_path, bus=self._bus, backend=self)
+                self._heart_rate_char = hrm_char
+                self._bus.export(hrm_path, hrm_char)
+                self._objects.append(hrm_char)
+                bsl_path = f'{hrs_service_path}/char1'
+                bsl_char = Characteristic(bsl_path, BODY_SENSOR_LOCATION_UUID, ['read'], hrs_service_path, bus=self._bus, backend=self)
+                bsl_char.value = [0x01]
+                self._bus.export(bsl_path, bsl_char)
+                self._objects.append(bsl_char)
+            except Exception as e:
+                log.debug(f"HRS setup error: {e}")
         
         # Cycling Power Service
         try:
@@ -555,7 +660,6 @@ class BLEFTMSBackend:
             self._cycling_power_char = cpm_char
             self._bus.export(cpm_path, cpm_char)
             self._objects.append(cpm_char)
-            self._export_cccd(cpm_path)
         except Exception as e:
             log.debug(f"CPS setup error: {e}")
         
@@ -579,18 +683,12 @@ class BLEFTMSBackend:
             log.debug(f"DIS setup error: {e}")
         
         # Register application
-        await self._register_gatt_application()
-
-    def _export_cccd(self, characteristic_path: str) -> None:
-        """Export the CCCD descriptor (0x2902) for a notify/indicate characteristic."""
-        cccd_path = f'{characteristic_path}/desc0'
-        descriptor = CCCD(cccd_path, characteristic_path)
+        self._object_manager = ObjectManager(self._app_path, self._objects)
         try:
-            self._bus.export(cccd_path, descriptor)
+            self._bus.export(self._app_path, self._object_manager)
         except Exception as e:
-            log.debug("CCCD export error for %s: %s", characteristic_path, e)
-            return
-        self._objects.append(descriptor)
+            log.debug("ObjectManager export error: %s", e)
+        await self._register_gatt_application()
 
     async def _register_gatt_application(self):
         try:
@@ -605,7 +703,12 @@ class BLEFTMSBackend:
 
     async def _register_advertisement(self):
         if self._advertisement is None:
-            self._advertisement = Advertisement(self._adv_path, self._device_name)
+            advertise_hr = bool(
+                getattr(getattr(self.config, "ble", None), "advertise_heart_rate", True)
+            )
+            self._advertisement = Advertisement(
+                self._adv_path, self._device_name, advertise_heart_rate=advertise_hr
+            )
             self._bus.export(self._adv_path, self._advertisement)
         try:
             introspection = await self._bus.introspect('org.bluez', f'/org/bluez/{self._adapter}')
@@ -829,6 +932,38 @@ class BLEFTMSBackend:
             except Exception as e:
                 log.debug("Notify loop error: %s", e)
             await asyncio.sleep(0.25)
+
+    def diagnostics(self) -> dict:
+        """Return subscription state and notification counters for the web UI.
+
+        Exposed through ``/api/diagnostics`` so a client that connects but never
+        enables notifications is distinguishable from one whose notifications
+        fail to reach it.
+        """
+
+        def describe(char):
+            if char is None:
+                return None
+            return {
+                "uuid": char.uuid,
+                "notifying": bool(getattr(char, "notifying", False)),
+                "indicating": bool(getattr(char, "indicating", False)),
+                "notifications_sent": int(getattr(char, "notifications_sent", 0)),
+                "last_error": getattr(char, "last_error", None),
+            }
+
+        return {
+            "gatt_registered": self._app is not None,
+            "advertising": self._advertisement is not None,
+            "control_point_enabled": bool(self._control_point_enabled),
+            "characteristics": {
+                "indoor_bike_data": describe(self._indoor_bike_data_char),
+                "fitness_machine_status": describe(self._fitness_machine_status_char),
+                "control_point": describe(self._control_point_char),
+                "heart_rate": describe(self._heart_rate_char),
+                "cycling_power": describe(self._cycling_power_char),
+            },
+        }
 
     async def _cleanup(self):
         try:

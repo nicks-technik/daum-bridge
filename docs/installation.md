@@ -15,7 +15,8 @@ This guide covers installing the Daum Bridge from GitHub and its prerequisites.
 - Bluetooth range between Linux bridge and Windows/MyWhoosh
 
 ### Software Requirements
-- Python >= 3.10
+- Python 3.10–3.12 (Python 3.13+ breaks `dbus-next`, which the BLE FTMS
+  backend needs). The repo pins `.python-version` to 3.12 for `uv`.
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - Git
 - `pyserial`, `dbus-next` (installed via dependencies)
@@ -215,6 +216,51 @@ The user running the bridge must be in `bluetooth` group (done by setup script).
 sudo hciconfig hci0 down
 sudo hciconfig hci0 up
 ```
+- If MyWhoosh is connected but stays at zero, check `http://<bridge>:8080/api/diagnostics`
+  → `ble.characteristics`: `notifying` shows whether the app enabled notifications and
+  `notifications_sent` whether the bridge is sending them.
+- After restarting the bridge while a client is connected, the BLE link may stay up
+  without the app re-subscribing. Disconnect it so it reconnects and rediscovers the
+  GATT tree (MyWhoosh usually reconnects on its own):
+```bash
+bluetoothctl disconnect <client-mac>
+```
+
+### Device name
+BlueZ answers the GAP Device Name characteristic (0x2A00) from the adapter
+*alias*, not from the LE advertisement's `LocalName`. Apps such as MyWhoosh read
+that characteristic after connecting, so an adapter named `DietPi` wins even
+when the advertisement carries `DAUM-8008-TRS`.
+
+At startup the bridge sets the adapter alias to `ble.device_name` (and logs
+`Adapter alias on hci0 set to DAUM-8008-TRS`). The alias is persisted by BlueZ.
+If an app still shows the old host name, remove the trainer from the app (and
+from the Windows Bluetooth device list) and scan again — Windows caches device
+names by address.
+
+### Heart-rate belt (optional)
+Pair the belt once, in the bridge rather than in the training app:
+
+```yaml
+ble:
+  advertise_heart_rate: true
+
+heart_rate:
+  enabled: true
+  device: ""        # BLE address or part of the name; empty = first strap
+  scan_timeout: 30
+  reconnect_delay: 5
+```
+
+The bridge scans with the same adapter that is advertising FTMS, subscribes to
+the standard Heart Rate Measurement characteristic (0x2A37), writes the value
+into the ride recording (so the TCX contains heart rate) and republishes it
+through the FTMS Heart Rate Service, so MyWhoosh still displays it.
+
+A strap accepts only one central at a time. Disconnect/remove the belt from
+MyWhoosh and Windows Bluetooth first; otherwise the bridge cannot see it and
+logs `no heart-rate belt found ...`. The status is visible in
+`/api/diagnostics` → `heart_rate_backend`.
 
 ## ANT+ FE-C (optional)
 

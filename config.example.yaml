@@ -17,11 +17,41 @@ bridge:
   # Highest gear used when FTMS/FE-C resistance is translated to Daum gears.
   max_gear: 30
 
+sim:
+  # Free-ride ("simulation") mode: apps such as MyWhoosh send a road grade
+  # instead of a target power. The Daum has no incline motor, so the bridge
+  # turns the cockpit's speed + the grade into a target power and lets the
+  # brake hold it. These are the rider/bike constants of that power model.
+  enabled: true
+  rider_mass_kg: 80
+  bike_mass_kg: 9
+  crr: 0.004              # rolling resistance coefficient (road tyre)
+  cw: 0.51                # drag area Cd * A in m^2
+  max_grade_percent: 16   # grades are clamped to this value
+  power_scale: 1.0        # <1 = easier free ride, >1 = harder
+
 ble:
   enabled: true
   adapter: "hci0"  # BlueZ adapter
   device_name: "DAUM-8008-TRS"
+  # Publish the FTMS Heart Rate Service so the training app sees the heart
+  # rate the bridge reads from the belt (see heart_rate below).
+  advertise_heart_rate: true
   # FTMS service/characteristics handled internally
+
+heart_rate:
+  # Read a BLE heart-rate belt with the bridge (central role) instead of
+  # pairing it in the training app. The value is written to the ride file
+  # (TCX) and republished through the FTMS Heart Rate Service, so MyWhoosh
+  # still shows it. The belt must not be connected to the app at the same
+  # time - a strap accepts only one central.
+  enabled: false
+  # BLE address or part of the advertised name; empty = first strap found.
+  device: ""
+  # Adapter to scan with; empty = use ble.adapter.
+  adapter: ""
+  scan_timeout: 30        # seconds to look for the belt
+  reconnect_delay: 5      # seconds between reconnect attempts
 
 ant:
   # Broadcast as an ANT+ FE-C trainer (device type 17) in addition to BLE.

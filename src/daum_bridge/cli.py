@@ -124,7 +124,7 @@ def calibrate(
         console.print("  power: offset +5 (raw * 5)")
         console.print("  cadence/rpm: offset +6")
         console.print("  gear: offset +16")
-        console.print("  hr: scan offsets 4-10 in person data (0xA2)")
+        console.print("  hr: scan offsets 4-10 in person data (0x74)")
         console.print("\nSet logging.log_raw_frames: true and save frames for tuning.")
         ser.close()
     except Exception as e:

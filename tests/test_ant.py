@@ -232,7 +232,10 @@ def test_backend_translates_control_pages_to_bridge():
 
     backend._on_control({"mode": "track", "grade_percent": 3.0})
     assert backend.bridge._target_grade_pct == 3.0
-    assert backend.bridge._target_resistance_pct == 65.0
+    # Grade is simulation mode now: the load comes from speed + grade as a
+    # target power, not from a gear/resistance mapping.
+    assert backend.bridge._sim_active is True
+    assert backend.bridge._target_resistance_pct == 0.0
 
 
 class _State:
