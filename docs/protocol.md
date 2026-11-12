@@ -34,8 +34,11 @@ The brake only understands a target power (`set_Watt`, ergopower =
   not a wattage. The Daum has no incline motor, so `daum_bridge.sim` turns the
   cockpit's own speed and the grade into the power a rider would need on that
   slope (gravity + rolling resistance + drag), and the bridge sends *that* as
-  the target power. Because the gear changes the speed the cockpit reports,
-  gearing changes the load — the virtual-gear behaviour of a smart trainer.
+  the target power. The wind speed, rolling-resistance coefficient and drag
+  area sent in the same frame are used too (positive wind = headwind, negative
+  = tailwind), so wind changes the load as well. Because the gear changes the
+  speed the cockpit reports, gearing changes the load — the virtual-gear
+  behaviour of a smart trainer.
 
 The run-data power byte is the power the cockpit regulates, in 5 W units. At
 zero cadence the bridge reports 0 W. The cockpit never reports below 25 W,
@@ -44,6 +47,21 @@ which is why an unloaded bike always shows 25 W on its display.
 An idle `set_Watt` must not be sent: `set_Watt 0` leaves the cockpit in watt
 mode, where it holds 25 W and ignores the gear buttons. Releasing ERG therefore
 also sends `set_Prog 0`.
+
+## Cockpit gear mode (free ride)
+`set_Watt` puts the cockpit into watt mode: the buttons and the jog wheel then
+change the target power and the gear is ignored. To keep the bike's own gear
+controls usable, the bridge follows the reference startup sequence and sends
+`set_Prog 0` followed by `set_Gear <current gear>`:
+
+- once after every new serial connection, and
+- whenever simulation mode is entered (the first FTMS `0x11` / FE-C page 51
+  after ERG or at startup).
+
+From then on the cockpit reports gear changes in byte 16 of the run data. In
+free ride the bridge adopts that gear as its current gear (a short grace period
+after its own `set_Gear` avoids treating stale frames as rider shifts), so
+cockpit shifts, web/CLI shifts and the simulated load all agree.
 
 ## Discovery
 1. Send `get_Adress` (0x11)

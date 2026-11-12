@@ -132,7 +132,9 @@ You can also use environment variables:
 - `DAUM_SERIAL_PORT`
 - `DAUM_BLE_NAME`
 - `DAUM_WEB_PORT`
-- `DAUM_MAX_GEAR` (highest gear for resistance mapping, default 20)
+- `DAUM_MAX_GEAR` (highest gear of your cockpit for resistance mapping and
+  cockpit gear sync; default 20, protocol range 1–28 — set it to the top gear
+  your bike actually has, e.g. 27)
 - `DAUM_ANT_ENABLED`, `DAUM_ANT_DEVICE_ID`, `DAUM_ANT_NETWORK_KEY`
 
 ### Run
@@ -286,8 +288,8 @@ and 54 (FE Capabilities). Control pages are decoded and applied to the bike:
 | --- | --- | --- |
 | 49 | Target power | `set_target_watt()` (ERG) |
 | 48 | Basic resistance | resistance % → gear |
-| 51 | Track resistance | grade % → resistance % → gear |
-| 50 | Wind resistance | not supported (command status reports it) |
+| 51 | Track resistance | grade % (and Crr) → simulated power |
+| 50 | Wind resistance | wind speed → simulated power (coefficient ignored) |
 
 Page 71 (Command Status) reports the result of the last control page. If
 `openant` is not installed the backend logs a warning and BLE remains active.
