@@ -14,14 +14,19 @@ serial:
 bridge:
   poll_interval: 0.5  # seconds for run_Data polling
   reconnect_delay: 2.0
-  # Highest gear used when FTMS/FE-C resistance is translated to Daum gears.
-  max_gear: 30
+  # Highest gear of your Daum cockpit. FTMS/FE-C resistance is translated onto
+  # gears 1..max_gear and cockpit gear shifts above it are pulled back. The
+  # protocol accepts 1-28: set this to the top gear your bike actually has
+  # (e.g. 27).
+  max_gear: 27
 
 sim:
   # Free-ride ("simulation") mode: apps such as MyWhoosh send a road grade
   # instead of a target power. The Daum has no incline motor, so the bridge
   # turns the cockpit's speed + the grade into a target power and lets the
-  # brake hold it. These are the rider/bike constants of that power model.
+  # brake hold it. Gear mode stays active, so the cockpit's buttons and jog
+  # wheel shift gears (which change the reported speed and therefore the load).
+  # These are the rider/bike constants of that power model.
   enabled: true
   rider_mass_kg: 80
   bike_mass_kg: 9
