@@ -2,6 +2,8 @@ import asyncio
 import struct
 from types import SimpleNamespace
 
+import pytest
+
 from daum_bridge.backends import ble_ftms
 from daum_bridge.config import Config
 from daum_bridge.serial.daum import DaumState
@@ -87,8 +89,9 @@ class FakeBridge:
     def set_resistance_percent(self, percent):
         self.resistance.append(percent)
 
-    def set_grade_percent(self, grade):
+    def set_grade_percent(self, grade, **kwargs):
         self.grades.append(grade)
+        self.sim_kwargs = kwargs
 
 
 def _control_backend(bridge=None):
@@ -119,6 +122,16 @@ def test_control_point_request_control():
     backend._handle_control_point(bytes([ble_ftms.OP_REQUEST_CONTROL]))
     assert backend._control_point_enabled is True
     assert _response(backend) == bytes([0x80, 0x00, 0x01])
+
+
+def test_control_point_request_control_does_not_grant_erg():
+    bridge = FakeBridge()
+    bridge._erg_control_granted = False
+    backend = _control_backend(bridge)
+    backend._handle_control_point(bytes([ble_ftms.OP_REQUEST_CONTROL]))
+    # Request Control is also sent for free ride / simulation parameters; it
+    # must not be mistaken for an ERG target-power request.
+    assert bridge._erg_control_granted is False
 
 
 def test_control_point_set_target_power():
@@ -152,8 +165,22 @@ def test_control_point_set_simulation_parameters():
     payload = struct.pack("<BhhBB", ble_ftms.OP_SET_SIMULATION, 500, 350, 40, 51)
     backend._handle_control_point(payload)
     assert bridge.grades == [3.5]
+    # Wind speed is 0.001 m/s, CRR 0.0001 and Cw 0.01 in the FTMS frame; all
+    # three must reach the bridge, not just the grade.
+    assert bridge.sim_kwargs["wind_mps"] == pytest.approx(0.5)
+    assert bridge.sim_kwargs["crr"] == pytest.approx(0.004)
+    assert bridge.sim_kwargs["cw"] == pytest.approx(0.51)
     assert _response(backend) == bytes([0x80, 0x11, 0x01])
     assert _status(backend) == bytes([ble_ftms.STATUS_SIMULATION_CHANGED]) == b"\x12"
+
+
+def test_control_point_simulation_forwards_negative_wind():
+    bridge = FakeBridge()
+    backend = _control_backend(bridge)
+    backend._handle_control_point(
+        struct.pack("<BhhBB", ble_ftms.OP_SET_SIMULATION, -2500, 0, 40, 51)
+    )
+    assert bridge.sim_kwargs["wind_mps"] == pytest.approx(-2.5)
 
 
 def test_control_point_requires_request_control():

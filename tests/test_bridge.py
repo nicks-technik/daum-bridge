@@ -140,7 +140,151 @@ def test_set_grade_percent_uses_simulated_power():
     # 30 km/h up 3 % is a real climb: well above the 25 W idle floor.
     assert b._sim_watt > 100
     b.protocol.set_watt.assert_called_with(b._sim_watt)
+    # Entering simulation only re-asserts the current gear (manual program 0 +
+    # set_Gear), it never selects a different one.
+    b.protocol.set_program.assert_called_with(0)
+    b.protocol.set_gear.assert_called_once_with(1)
+    assert b._target_gear == 1
+
+
+def test_set_grade_percent_asserts_gear_mode_only_on_entry():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.speed = 30.0
+    b.state.cadence = 80.0
+
+    b.set_grade_percent(3.0)
+    b.set_grade_percent(4.0)
+    b.set_grade_percent(5.0)
+
+    assert b.protocol.set_gear.call_count == 1
+    assert b.protocol.set_program.call_count == 1
+
+
+def test_cockpit_gear_change_is_adopted_in_sim():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.cadence = 80.0
+    b.set_grade_percent(3.0)
+    b._last_gear_command = 0.0  # long ago: run data is authoritative again
+
+    b.state.gear = 7
+    b._sync_gear_from_cockpit()
+
+    assert b._target_gear == 7
+    assert b._target_resistance_pct == 0.0
+    assert b._last_shift_source == "cockpit"
+
+
+def test_cockpit_gear_sync_ignores_stale_frame_after_bridge_shift():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.cadence = 80.0
+    b.set_grade_percent(3.0)
+
+    b.set_gear(9)
+    b.state.gear = 1  # cockpit has not caught up yet
+    b._sync_gear_from_cockpit()
+
+    assert b._target_gear == 9
+
+
+def test_cockpit_gear_sync_is_inactive_outside_sim():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.connected = True
+
+    b.state.gear = 12
+    b._sync_gear_from_cockpit()
+
+    assert b._target_gear == 1
+
+
+def test_enter_manual_gear_mode_sends_program_then_gear():
+    from unittest.mock import call
+
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.gear = 6
+
+    b._enter_manual_gear_mode()
+
+    # Order matters: program 0 first, then set_Gear switches the cockpit to
+    # gear mode, where its buttons and jog wheel shift gears.
+    assert b.protocol.mock_calls[:2] == [call.set_program(0), call.set_gear(6)]
+    assert b._target_gear == 6
+
+
+def test_enter_manual_gear_mode_without_address_is_noop():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = False
+
+    b._enter_manual_gear_mode()
+
+    b.protocol.set_program.assert_not_called()
     b.protocol.set_gear.assert_not_called()
+
+
+def test_sim_uses_headwind_and_tailwind_from_the_app():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+    b.state.speed = 30.0
+    b.state.cadence = 80.0
+
+    b.set_grade_percent(0.0, wind_mps=5.0)
+    headwind = b._sim_watt
+    b.set_sim_conditions(wind_mps=-5.0)
+    tailwind = b._sim_watt
+
+    assert headwind > tailwind
+
+
+def test_app_environment_reaches_the_power_model_and_clears_on_erg():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+
+    b.set_grade_percent(0.0, wind_mps=5.0, crr=0.006, cw=0.6)
+
+    assert b._sim_wind_mps == 5.0
+    assert b._sim_crr == 0.006
+    assert b._sim_cw == 0.6
+
+    b.set_target_watt(200)
+
+    assert b._sim_wind_mps == 0.0
+    assert b._sim_crr is None
+    assert b._sim_cw is None
+
+
+def test_grade_update_keeps_environment_from_a_separate_page():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+
+    b.set_grade_percent(0.0, wind_mps=4.0)
+    b.set_grade_percent(2.0)  # FE-C grade page without a wind field
+
+    assert b._sim_wind_mps == 4.0
+
+
+def test_implausible_environment_values_are_ignored():
+    b = DaumBridge(Config())
+    b.protocol = Mock()
+    b.protocol._address_found = True
+
+    # Some apps leave unused fields at zero; that must not remove air drag.
+    b.set_grade_percent(0.0, crr=0.0, cw=0.0)
+
+    assert b._sim_crr is None
+    assert b._sim_cw is None
 
 
 def test_set_grade_percent_falls_back_to_gear_when_sim_disabled():

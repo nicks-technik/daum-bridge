@@ -46,6 +46,15 @@ def bridge_snapshot(bridge) -> dict:
         "target_grade_percent": getattr(bridge, "_target_grade_pct", None),
         "sim_active": getattr(bridge, "_sim_active", False),
         "sim_watt": getattr(bridge, "_sim_watt", 0),
+        # Environment the app asked for (FTMS 0x11 / FE-C pages 50/51). Wind is
+        # fed into the simulated power; crr/cw are None while the configured
+        # defaults are used.
+        "sim_wind_mps": getattr(bridge, "_sim_wind_mps", 0.0),
+        "sim_crr": getattr(bridge, "_sim_crr", None),
+        "sim_cw": getattr(bridge, "_sim_cw", None),
+        # True once the cockpit was put back into manual program 0 + gear mode,
+        # which is what enables the bike's own buttons / jog wheel to shift.
+        "gear_mode_asserted": getattr(bridge, "_manual_mode_asserted", False),
         "app_connected": getattr(bridge, "_app_connected", False),
         # Kept for API compatibility with older clients; both keys now describe
         # the single "is an FTMS client attached" flag.

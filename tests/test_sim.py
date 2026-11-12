@@ -40,6 +40,13 @@ def test_grade_is_clamped_to_the_configured_maximum():
     assert steep == pytest.approx(at_limit)
 
 
+def test_headwind_costs_more_power_than_tailwind():
+    still = sim.simulated_power(30.0, 0.0)
+    headwind = sim.simulated_power(30.0, 0.0, wind_mps=5.0)
+    tailwind = sim.simulated_power(30.0, 0.0, wind_mps=-5.0)
+    assert headwind > still > tailwind
+
+
 def test_heavier_rider_needs_more_power_on_a_climb():
     light = sim.simulated_power(15.0, 5.0, rider_mass_kg=60.0)
     heavy = sim.simulated_power(15.0, 5.0, rider_mass_kg=100.0)

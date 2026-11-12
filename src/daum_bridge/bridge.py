@@ -87,7 +87,22 @@ class DaumBridge:
         self._sim_active = False
         self._sim_watt = 0
         self._last_sim_apply = 0.0
+        #: Environmental conditions sent by the app while free riding. Wind is
+        #: part of the power model; ``crr``/``cw`` replace the configured
+        #: defaults when the app supplies plausible values. Cleared when ERG or
+        #: resistance takes over so stale conditions cannot linger.
+        self._sim_wind_mps = 0.0
+        self._sim_crr: Optional[float] = None
+        self._sim_cw: Optional[float] = None
         self._virtual_shifting_enabled = True
+        #: True once the cockpit has been put back into manual program 0 with
+        #: gear mode active (program 0 + ``set_Gear``). That is what makes the
+        #: cockpit's buttons and jog wheel shift gears instead of changing the
+        #: target power. Re-armed for every new serial connection.
+        self._manual_mode_asserted = False
+        #: When the bridge itself last sent a gear. Run data that still reports
+        #: the previous gear for a moment must not look like a rider shift.
+        self._last_gear_command = 0.0
 
         # --- ride recording ----------------------------------------------
         self._recorder = RideRecorder()
@@ -325,6 +340,10 @@ class DaumBridge:
         except Exception as e:
             log.error(f"Failed to open serial port {port}: {e}")
             raise
+        # A freshly opened connection can be in any cockpit mode (the bike may
+        # have been used in watt mode before); force manual gear mode once the
+        # address is known, see ``_enter_manual_gear_mode``.
+        self._manual_mode_asserted = False
         return self
 
     def start(self):
@@ -514,6 +533,12 @@ class DaumBridge:
                 else:
                     if self._serial_connected_time is None:
                         self._serial_connected_time = time.time()
+                    # Startup sequence from the reference implementation: program
+                    # 0 followed by set_Gear turns the cockpit into gear mode, so
+                    # its buttons / jog wheel shift gears instead of target power.
+                    if not self._manual_mode_asserted:
+                        self._manual_mode_asserted = True
+                        self._enter_manual_gear_mode()
                     # Poll run data
                     if time.time() - last_run_data > getattr(self.config.bridge, 'poll_interval', 0.5):
                         try:
@@ -527,6 +552,7 @@ class DaumBridge:
                     # Simulation mode: speed + grade -> target power. The brake
                     # has no incline motor, so this is how terrain reaches it.
                     if self._sim_active:
+                        self._sync_gear_from_cockpit()
                         self._apply_sim_power()
                     # Re-apply the target watt while ERG is active. Never at
                     # idle: sending ``set_Watt 0`` keeps the cockpit in watt
@@ -589,6 +615,7 @@ class DaumBridge:
             self._target_resistance_pct = 0.0
             self._target_grade_pct = None
             self._sim_active = False
+            self._clear_sim_conditions()
             # Requesting a target power means the app controls load in ERG mode.
             self._erg_control_granted = True
         if self.protocol and getattr(self.protocol, '_address_found', False):
@@ -661,25 +688,33 @@ class DaumBridge:
         self._target_resistance_pct = round(pct, 1)
         self._target_grade_pct = None
         self._sim_active = False
+        self._clear_sim_conditions()
         if self._target_watt != 0 or self._erg_control_granted:
             self.set_target_watt(0)
             self._erg_control_granted = False
         self._apply_gear(self.resistance_to_gear(pct))
 
-    def set_grade_percent(self, grade: float):
+    def set_grade_percent(self, grade: float, wind_mps=None, crr=None, cw=None):
         """Apply a road grade in percent (FTMS/FE-C simulation mode).
 
         The Daum has no incline motor, so the bridge simulates the load: the
-        cockpit's own speed and the requested grade are turned into the power a
-        rider would need to hold that speed on that grade, and that power is
-        sent as an ERG target. See :mod:`daum_bridge.sim`.
+        cockpit's own speed, the requested grade and the environment are turned
+        into the power a rider would need to hold that speed. That power is sent
+        as an ERG target. See :mod:`daum_bridge.sim`.
 
-        A grade alone never changes the gear: gearing stays with the rider
-        (handlebar buttons, web UI, app), and the load follows from speed.
+        ``wind_mps`` is the app's wind speed (positive = headwind), ``crr`` the
+        rolling-resistance coefficient and ``cw`` the drag area (Cd * A). Apps
+        send all three with the grade (FTMS 0x11); ``None`` keeps the value
+        previously received (FE-C sends wind and grade in separate pages).
+
+        A grade never selects a gear: gearing stays with the rider (cockpit
+        buttons, web UI, app). Entering simulation re-asserts the current gear
+        so the cockpit switches back to gear mode.
         """
         value = maybe_float(grade)
         if value is None:
             return
+        self._update_sim_conditions(wind_mps=wind_mps, crr=crr, cw=cw)
         sim_cfg = getattr(self.config, "sim", None)
         value = max(-25.0, min(25.0, value))
         self._target_grade_pct = round(value, 2)
@@ -694,8 +729,109 @@ class DaumBridge:
             self.set_target_watt(0)
             self._erg_control_granted = False
         self._target_resistance_pct = 0.0
+        entering_sim = not self._sim_active
         self._sim_active = True
+        if entering_sim:
+            # ``set_Watt`` leaves the cockpit in watt mode. Re-assert manual
+            # gear mode so the rider can shift on the bike while the grade is
+            # translated into brake power here.
+            log.info("Free ride: simulation active (grade %.1f %%)", value)
+            self._enter_manual_gear_mode()
         self._apply_sim_power()
+
+    def set_sim_conditions(self, *, wind_mps=None, crr=None, cw=None):
+        """Update wind / surface conditions without changing the grade.
+
+        Needed for ANT+ FE-C, where wind (page 50) and grade (page 51) arrive in
+        separate pages, and for any app that updates only the environment.
+        Applies immediately when simulation is already running.
+        """
+        self._update_sim_conditions(wind_mps=wind_mps, crr=crr, cw=cw)
+        if self._sim_active and self._target_grade_pct is not None:
+            self._apply_sim_power()
+
+    def _update_sim_conditions(self, *, wind_mps=None, crr=None, cw=None):
+        """Store app-provided environment values, ignoring implausible ones.
+
+        A missing field (``None``) keeps the previous value. Values outside a
+        physically plausible window are dropped: some apps fill unused fields
+        with 0, and adopting ``cw = 0`` would remove air drag from the model.
+        """
+        if wind_mps is not None:
+            wind = as_float(wind_mps, 0.0)
+            self._sim_wind_mps = max(-30.0, min(30.0, wind))
+        if crr is not None:
+            value = as_float(crr, -1.0)
+            if 0.001 <= value <= 0.02:
+                self._sim_crr = value
+        if cw is not None:
+            value = as_float(cw, -1.0)
+            if 0.1 <= value <= 1.5:
+                self._sim_cw = value
+
+    def _clear_sim_conditions(self):
+        """Forget app-provided wind/CRR/Cw when simulation is left."""
+        self._sim_wind_mps = 0.0
+        self._sim_crr = None
+        self._sim_cw = None
+
+    def _enter_manual_gear_mode(self):
+        """Put the cockpit back into manual program 0 with gear mode active.
+
+        Sending ``set_Prog 0`` and then ``set_Gear`` is the startup sequence of
+        the reference implementation: it "forces the daum cockpit to change
+        gears instead of power when using the buttons or the jog wheel". Until
+        that happens the cockpit stays in watt mode, where the jog wheel only
+        changes the target power and the gear is ignored.
+
+        The gear reported by the cockpit is kept when available, so entering
+        simulation does not jump to the bridge's default gear.
+        """
+        protocol = self.protocol
+        if not (protocol and getattr(protocol, "_address_found", False)):
+            return
+        gear = maybe_int(getattr(self.state, "gear", 0))
+        if not gear or gear < 1:
+            gear = self._target_gear
+        gear = max(1, min(self.max_gear, int(gear)))
+        self._target_gear = gear
+        try:
+            set_program = getattr(protocol, "set_program", None)
+            if callable(set_program):
+                set_program(0)
+            protocol.set_gear(gear)
+            self._last_gear_command = time.time()
+            log.debug("Cockpit switched to manual gear mode (gear %s)", gear)
+        except Exception as e:
+            log.debug("Could not enter manual gear mode: %s", e)
+
+    def _sync_gear_from_cockpit(self):
+        """Adopt a gear the rider shifted on the cockpit itself.
+
+        In gear mode the cockpit reports its current gear in every run-data
+        frame. During simulation that is the authoritative gear: it is the one
+        the rider sees and the one that changes the reported speed (and thus
+        the simulated power). Frames that still carry the gear the bridge sent
+        are ignored for a moment, otherwise every bridge-side shift would be
+        answered with the stale value.
+        """
+        if not self._sim_active:
+            return
+        if time.time() - self._last_gear_command < 1.5:
+            return
+        gear = maybe_int(getattr(self.state, "gear", 0))
+        if not gear or gear < 1:
+            return
+        target = max(1, min(self.max_gear, gear))
+        if target == self._target_gear:
+            return
+        log.info("Cockpit gear change: %s", target)
+        self._target_gear = target
+        self._last_shift_source = "cockpit"
+        self._last_shift_at = time.time()
+        if gear > target:
+            # Shifted beyond bridge.max_gear: pull the cockpit back into range.
+            self._apply_gear(target)
 
     def _apply_sim_power(self):
         """Recalculate and send the simulated target power.
@@ -716,9 +852,10 @@ class DaumBridge:
             self._target_grade_pct or 0.0,
             rider_mass_kg=getattr(sim_cfg, "rider_mass_kg", 80.0),
             bike_mass_kg=getattr(sim_cfg, "bike_mass_kg", 9.0),
-            crr=getattr(sim_cfg, "crr", 0.004),
-            cw=getattr(sim_cfg, "cw", 0.51),
+            crr=self._sim_crr if self._sim_crr is not None else getattr(sim_cfg, "crr", 0.004),
+            cw=self._sim_cw if self._sim_cw is not None else getattr(sim_cfg, "cw", 0.51),
             max_grade_percent=getattr(sim_cfg, "max_grade_percent", 16.0),
+            wind_mps=self._sim_wind_mps,
         )
         watts *= max(0.0, as_float(getattr(sim_cfg, "power_scale", 1.0), 1.0))
         target = sim.clamp_power(watts)
@@ -731,7 +868,13 @@ class DaumBridge:
             self._sim_watt = target
             self._last_sim_apply = time.time()
             self._last_target_set = time.time()
-            log.debug("SIM power: %.0f km/h, %.1f %% -> %s W", self.state.speed, self._target_grade_pct or 0.0, target)
+            log.debug(
+                "SIM power: %.0f km/h, %.1f %%, wind %+.1f m/s -> %s W",
+                self.state.speed,
+                self._target_grade_pct or 0.0,
+                self._sim_wind_mps,
+                target,
+            )
         except Exception as e:
             log.debug("SIM set_watt error: %s", e)
 
@@ -740,6 +883,7 @@ class DaumBridge:
         if self.protocol and getattr(self.protocol, '_address_found', False):
             try:
                 self.protocol.set_gear(self._target_gear)
+                self._last_gear_command = time.time()
                 self._last_target_set = time.time()
             except Exception as e:
                 log.debug("set_gear error: %s", e)

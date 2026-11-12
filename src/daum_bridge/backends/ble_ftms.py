@@ -741,9 +741,10 @@ class BLEFTMSBackend:
 
             # Request Control (0x00)
             if op_code == OP_REQUEST_CONTROL:
+                # Granting FTMS control is not an ERG request: apps ask for
+                # control before sending simulation parameters (free ride), so
+                # this must not flip the bridge into watt mode.
                 self._control_point_enabled = True
-                if self.bridge and hasattr(self.bridge, '_erg_control_granted'):
-                    self.bridge._erg_control_granted = True
                 if self.bridge and hasattr(self.bridge, '_app_connected_time'):
                     self.bridge._app_connected_time = time.time()
                 self._send_cp_response(OP_REQUEST_CONTROL, CP_SUCCESS)
@@ -835,18 +836,23 @@ class BLEFTMSBackend:
                 if len(raw) < 7:
                     self._send_cp_response(op_code, CP_INVALID_PARAMETER, 0x01)
                     return
-                wind_speed, grade_raw, _crr, _wind_res = struct.unpack_from('<hhBB', raw, 1)
+                wind_speed, grade_raw, crr_raw, wind_res_raw = struct.unpack_from('<hhBB', raw, 1)
                 grade = max(-25.0, min(25.0, grade_raw / 100.0))
+                wind_mps = wind_speed / 1000.0
+                crr = crr_raw * 0.0001
+                cw = wind_res_raw * 0.01
                 if not hasattr(self.bridge, "set_grade_percent"):
                     self._send_cp_response(op_code, CP_NOT_SUPPORTED)
                     return
                 log.info(
-                    "FTMS simulation: grade %.2f %%, wind %.3f m/s (wind ignored)",
+                    "FTMS simulation: grade %.2f %%, wind %+.3f m/s, crr %.4f, cw %.2f",
                     grade,
-                    wind_speed / 1000.0,
+                    wind_mps,
+                    crr,
+                    cw,
                 )
                 try:
-                    self.bridge.set_grade_percent(grade)
+                    self.bridge.set_grade_percent(grade, wind_mps=wind_mps, crr=crr, cw=cw)
                 except Exception as e:
                     log.warning("Error setting simulation parameters: %s", e)
                     self._send_cp_response(op_code, CP_OPERATION_FAILED)
@@ -956,6 +962,10 @@ class BLEFTMSBackend:
             "gatt_registered": self._app is not None,
             "advertising": self._advertisement is not None,
             "control_point_enabled": bool(self._control_point_enabled),
+            # Last control-point opcode seen, so a free-ride client that only
+            # sends Request Control + simulation params is distinguishable from
+            # one that actually asks for a target power (ERG).
+            "last_control_op": self._last_cp_req,
             "characteristics": {
                 "indoor_bike_data": describe(self._indoor_bike_data_char),
                 "fitness_machine_status": describe(self._fitness_machine_status_char),
