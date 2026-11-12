@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-11-12
+
+### Fixed
+- Free ride gear shifting: the cockpit is put back into manual program 0 with
+  gear mode active (`set_Prog 0` + `set_Gear`) after every connection and when
+  simulation starts. Before this, `set_Watt` left it in watt mode, so the jog
+  wheel changed the target power and the bike's own gear buttons did nothing.
+- Cockpit-side gear changes are read from the run data and adopted by the
+  bridge during free ride, keeping the web UI and the simulated load in sync.
+- FTMS Request Control (0x00) no longer marks ERG as granted; apps request
+  control for free ride too, so the bridge no longer assumed a target power
+  had been set.
+- Free-ride wind and surface: FTMS simulation parameters (0x11) now pass wind
+  speed, Crr and Cw into the power model instead of dropping all but the grade.
+  ANT+ FE-C wind pages (50) are supported instead of rejected, and page 51 Crr
+  is used. Headwind raises the load, tailwind lowers it.
+- ``config.example.yaml`` uses a valid ``max_gear`` (27) and documents that it
+  must match the cockpit's top gear; above it, cockpit shifts are pulled back.
+
 ## [0.5.0] - 2026-11-02
 
 ### Added
