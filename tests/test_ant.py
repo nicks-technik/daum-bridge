@@ -230,12 +230,16 @@ def test_backend_translates_control_pages_to_bridge():
     assert backend.bridge._target_resistance_pct == 50.0
     assert backend.bridge._target_watt == 0
 
-    backend._on_control({"mode": "track", "grade_percent": 3.0})
+    backend._on_control({"mode": "track", "grade_percent": 3.0, "crr": 0.005})
     assert backend.bridge._target_grade_pct == 3.0
+    assert backend.bridge._sim_crr == 0.005
     # Grade is simulation mode now: the load comes from speed + grade as a
     # target power, not from a gear/resistance mapping.
     assert backend.bridge._sim_active is True
     assert backend.bridge._target_resistance_pct == 0.0
+
+    backend._on_control({"mode": "wind", "wind_speed_kmh": 18.0})
+    assert backend.bridge._sim_wind_mps == pytest.approx(5.0)
 
 
 class _State:
@@ -298,15 +302,17 @@ def test_page_builder_answers_target_power_with_status_page():
     assert received[0]["target_power_w"] == 200.0
 
 
-def test_page_builder_reports_wind_as_not_supported():
+def test_page_builder_forwards_wind_to_bridge():
     received = []
     builder = FECPageBuilder(on_control=received.append)
     request = bytes([PAGE_WIND_RESISTANCE, 0xFF, 0xFF, 0xFF, 0xFF, 50, 137, 100])
 
     reply = builder.handle_ack(request)
 
-    assert reply[3] == ant_fe.COMMAND_STATUS_NOT_SUPPORTED
-    assert received == []
+    # Wind is emulated through the power model, so the page is supported now.
+    assert reply[3] == ant_fe.COMMAND_STATUS_PASS
+    assert received and received[0]["mode"] == "wind"
+    assert received[0]["wind_speed_kmh"] == 10
 
 
 def test_page_builder_reports_failed_control_application():

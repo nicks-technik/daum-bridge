@@ -423,13 +423,7 @@ class FECPageBuilder:
         self.command_sequence = (self.command_sequence + 1) & 0xFF
         status = COMMAND_STATUS_PASS
 
-        mode = control.get("mode")
-        if mode == "wind":
-            # An ergometer cannot emulate wind; report it honestly instead
-            # of silently ignoring the request.
-            status = COMMAND_STATUS_NOT_SUPPORTED
-            log.info("ANT+ FE-C wind resistance is not supported by the Daum bridge")
-        elif self.on_control is not None:
+        if self.on_control is not None:
             try:
                 self.on_control(control)
             except Exception:
@@ -616,7 +610,16 @@ class ANTFEBackend:
             grade = control.get("grade_percent")
             if grade is not None:
                 log.info("ANT+ FE-C track resistance: grade %.2f %%", grade)
-                bridge.set_grade_percent(grade)
+                bridge.set_grade_percent(grade, crr=control.get("crr"))
+        elif mode == "wind":
+            # FE-C page 50 carries wind speed (1 km/h, offset 127) and a wind
+            # resistance coefficient. Only the speed is fed into the power
+            # model; the coefficient units differ from the configured Cd * A.
+            speed_kmh = control.get("wind_speed_kmh")
+            setter = getattr(bridge, "set_sim_conditions", None)
+            if setter is not None and speed_kmh is not None:
+                log.info("ANT+ FE-C wind: %+.1f km/h", speed_kmh)
+                setter(wind_mps=speed_kmh / 3.6)
         else:  # pragma: no cover - decode_control_page only returns known modes
             log.debug("Unhandled ANT+ FE-C control page: %s", control)
 
